@@ -1,7 +1,7 @@
 import * as React from "react";
 
 import styles from "./button.module.scss";
-import { CSSProperties } from "react";
+import { CSSProperties, type JSX } from "react";
 import clsx from "clsx";
 
 export type ButtonType = "primary" | "danger" | null;

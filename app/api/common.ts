@@ -43,13 +43,6 @@ export async function requestOpenai(req: NextRequest) {
   console.log("[Proxy] ", path);
   console.log("[Base Url]", baseUrl);
 
-  const timeoutId = setTimeout(
-    () => {
-      controller.abort();
-    },
-    10 * 60 * 1000,
-  );
-
   if (isAzure) {
     const azureApiVersion =
       req?.nextUrl?.searchParams?.get("api-version") ||
@@ -142,6 +135,14 @@ export async function requestOpenai(req: NextRequest) {
       console.error("[OpenAI] gpt4 filter", e);
     }
   }
+
+  // Start the upstream timeout only after validation can no longer return early.
+  const timeoutId = setTimeout(
+    () => {
+      controller.abort();
+    },
+    10 * 60 * 1000,
+  );
 
   try {
     const res = await fetch(fetchUrl, fetchOptions);

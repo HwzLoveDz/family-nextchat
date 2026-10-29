@@ -14,6 +14,7 @@ import Locale from "../locales";
 
 import { createRoot } from "react-dom/client";
 import React, {
+  type JSX,
   CSSProperties,
   HTMLProps,
   MouseEvent,
@@ -554,7 +555,7 @@ export function Selector<T>(props: {
 }
 export function FullScreen(props: any) {
   const { children, right = 10, top = 10, ...rest } = props;
-  const ref = useRef<HTMLDivElement>();
+  const ref = useRef<HTMLDivElement>(null);
   const [fullScreen, setFullScreen] = useState(false);
   const toggleFullscreen = useCallback(() => {
     if (!document.fullscreenElement) {

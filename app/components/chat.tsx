@@ -1,5 +1,6 @@
 import { useDebouncedCallback } from "use-debounce";
 import React, {
+  type JSX,
   Fragment,
   RefObject,
   useCallback,
@@ -452,7 +453,7 @@ export function ChatAction(props: {
 }
 
 function useScrollToBottom(
-  scrollRef: RefObject<HTMLDivElement>,
+  scrollRef: RefObject<HTMLDivElement | null>,
   detach: boolean = false,
   messages: ChatMessage[],
 ) {

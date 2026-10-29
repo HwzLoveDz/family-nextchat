@@ -1,5 +1,5 @@
 import { ApiPath } from "@/app/constant";
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { handle as openaiHandler } from "../../openai";
 import { handle as azureHandler } from "../../azure";
 import { handle as googleHandler } from "../../google";
@@ -14,13 +14,13 @@ import { handle as deepseekHandler } from "../../deepseek";
 import { handle as siliconflowHandler } from "../../siliconflow";
 import { handle as xaiHandler } from "../../xai";
 import { handle as chatglmHandler } from "../../glm";
-import { handle as proxyHandler } from "../../proxy";
 import { handle as ai302Handler } from "../../302ai";
 
 async function handle(
   req: NextRequest,
-  { params }: { params: { provider: string; path: string[] } },
+  context: { params: Promise<{ provider: string; path: string[] }> },
 ) {
+  const params = await context.params;
   const apiPath = `/api/${params.provider}`;
   console.log(`[${params.provider} Route] params `, params);
   switch (apiPath) {
@@ -56,7 +56,10 @@ async function handle(
     case ApiPath["302.AI"]:
       return ai302Handler(req, { params });
     default:
-      return proxyHandler(req, { params });
+      return NextResponse.json(
+        { error: true, msg: "This API provider is disabled." },
+        { status: 403 },
+      );
   }
 }
 
