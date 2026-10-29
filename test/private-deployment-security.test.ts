@@ -154,6 +154,24 @@ describe("private deployment API boundaries", () => {
     expect(logs).not.toContain(md5.hash(TEST_CODE));
   });
 
+  test("valid access code without a provider key is never forwarded upstream", async () => {
+    delete process.env.OPENAI_API_KEY;
+    const { handle } = await import("../app/api/openai");
+    const response = await handle(chatRequest(`Bearer nk-${TEST_CODE}`), {
+      params: { path: ["v1", "chat", "completions"] },
+    });
+    const body = await response.text();
+
+    expect(response.status).toBe(401);
+    expect(JSON.parse(body)).toEqual({
+      error: true,
+      msg: "The administrator has not configured an API key for GPT.",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(body).not.toContain(TEST_CODE);
+    expect(JSON.stringify(logSpy.mock.calls)).not.toContain(TEST_CODE);
+  });
+
   test("an authenticated request cannot use a model outside the configured list", async () => {
     jest.useFakeTimers({ doNotFake: ["nextTick", "queueMicrotask"] });
     try {
