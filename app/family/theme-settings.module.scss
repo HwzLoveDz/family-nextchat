@@ -1,0 +1,194 @@
+.control {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-self: center;
+  color: var(--ink);
+}
+.control .trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 76px;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--secondary-line);
+  border-radius: 10px;
+  color: var(--ink);
+  background: var(--paper);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  box-shadow: none;
+  white-space: nowrap;
+}
+.control .trigger:hover:not(:disabled) {
+  background: var(--hover);
+}
+.paletteIcon {
+  color: var(--accent);
+  font-size: 20px;
+  line-height: 1;
+}
+.panel {
+  position: fixed;
+  z-index: 10;
+  box-sizing: border-box;
+  width: min(360px, calc(100vw - 24px));
+  max-height: calc(var(--family-viewport-height, 100dvh) - 24px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y pinch-zoom;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: 0 14px 40px var(--app-shadow);
+  font:
+    14px/1.5 -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    "PingFang SC",
+    "Microsoft YaHei",
+    sans-serif;
+  user-select: text;
+}
+.panel *,
+.panel *::before,
+.panel *::after {
+  box-sizing: border-box;
+}
+.heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.heading h2 {
+  font-size: 16px;
+  margin: 1px 0 4px;
+  line-height: 1.4;
+}
+.heading p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.panel .close {
+  width: 44px;
+  min-height: 44px;
+  flex-shrink: 0;
+  border: 1px solid var(--secondary-line);
+  border-radius: 9px;
+  color: var(--ink);
+  background: var(--paper);
+  cursor: pointer;
+  font: inherit;
+  font-size: 22px;
+  padding: 4px;
+}
+.panel .close:hover {
+  background: var(--hover);
+}
+.choices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.choice {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 11px;
+  background: var(--paper);
+  cursor: pointer;
+  min-width: 0;
+  min-height: 100px;
+}
+.choice:hover {
+  background: var(--hover);
+}
+.choice.selected {
+  background: var(--soft-bg);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.choiceTitle {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  align-items: center;
+}
+.choiceTitle strong {
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.choice small {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+.panel .radio {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  margin: 0;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+  appearance: auto;
+  cursor: pointer;
+}
+.swatches {
+  display: flex;
+  height: 20px;
+  gap: 4px;
+}
+.swatches > span {
+  width: 27px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+.control .trigger:focus-visible,
+.panel .close:focus-visible,
+.panel .radio:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+.choice:focus-within {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+@media (max-width: 360px) {
+  .panel {
+    padding: 12px;
+  }
+  .choice {
+    padding: 10px;
+  }
+  .control .trigger {
+    min-width: 68px;
+    padding-inline: 9px;
+  }
+}

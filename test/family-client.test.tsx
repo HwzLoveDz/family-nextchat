@@ -179,6 +179,34 @@ describe("family client account isolation", () => {
     expect(container.textContent).toContain("模型 API 尚未配置。");
   });
 
+  test("changing appearance preserves the selected chat, model and unsent draft without an API mutation", async () => {
+    const { container } = render(<FamilyApp />);
+    fireEvent.click(await screen.findByRole("button", { name: /聊天 a/ }));
+    expect(await screen.findByText("甲的私密回复")).toBeInTheDocument();
+    const composer = screen.getByRole("textbox", { name: "发送消息" });
+    fireEvent.change(composer, { target: { value: "尚未发送的草稿" } });
+    const mutations = () =>
+      fetchMock.mock.calls.filter(
+        ([path, init]) =>
+          init?.method &&
+          init.method !== "GET" &&
+          path !== "/api/family/activity",
+      ).length;
+    const before = mutations();
+    fireEvent.click(screen.getByRole("button", { name: /^主题$/ }));
+    fireEvent.click(screen.getByRole("radio", { name: /^午夜灰$/ }));
+    expect(container.querySelector("main")).toHaveAttribute(
+      "data-family-theme",
+      "midnight",
+    );
+    expect(composer).toHaveValue("尚未发送的草稿");
+    expect(screen.getByText("甲的私密回复")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "选择模型" })).toHaveValue(
+      "model-fast",
+    );
+    expect(mutations()).toBe(before);
+  });
+
   test("last-turn editing preserves an earlier draft and IME/Shift+Enter do not submit", async () => {
     const createdAt = "2026-10-30T00:00:00Z";
     let record: FamilyChatDetail = {

@@ -16,15 +16,18 @@
 }
 .pickerRow small {
   font-size: 11px;
-  color: var(--muted, #687a73);
+  color: var(--muted);
 }
 .composer .pickButton {
   min-height: 44px;
   padding: 7px 11px;
-  background: #eef3e8;
-  border: 1px solid #d6e1cd;
-  color: var(--accent, #316451);
+  background: var(--attachment-button-bg);
+  border: 1px solid var(--attachment-button-line);
+  color: var(--accent);
   font-size: 12px;
+}
+.composer .pickButton:hover:not(:disabled) {
+  background: var(--hover);
 }
 .draftList,
 .savedList {
@@ -41,9 +44,9 @@
   align-items: center;
   min-width: 0;
   padding: 9px;
-  border: 1px solid #dde6d5;
+  border: 1px solid var(--attachment-line);
   border-radius: 10px;
-  background: #f4f6ef;
+  background: var(--attachment-bg);
 }
 .draftItem > img {
   width: 52px;
@@ -67,16 +70,20 @@
 .draftItem small,
 .savedInfo small {
   display: block;
-  color: var(--muted, #687a73);
+  color: var(--muted);
   font-size: 10px;
 }
 .composer .removeButton {
   min-height: 44px;
   min-width: 44px;
   padding: 5px 8px;
-  color: #876348;
+  color: var(--attachment-warning);
   background: transparent;
   font-size: 11px;
+}
+.composer .removeButton:hover:not(:disabled) {
+  background: var(--danger-bg);
+  color: var(--danger-text);
 }
 .fileBadge {
   width: 45px;
@@ -84,13 +91,13 @@
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  background: #e8efdf;
+  background: var(--attachment-badge-bg);
   border-radius: 7px;
-  color: #607a50;
+  color: var(--attachment-badge-text);
   font-size: 11px;
 }
 .error {
-  color: #963f32;
+  color: var(--error-text);
   font-size: 11px;
   margin: 5px 0 0;
   overflow-wrap: anywhere;
@@ -105,6 +112,9 @@
   border-radius: 7px;
   overflow: hidden;
   flex-shrink: 0;
+}
+.savedItem .thumbnail:hover:not(:disabled) {
+  background: transparent;
 }
 .thumbnail img {
   display: block;
@@ -133,10 +143,13 @@
   padding: 5px 8px;
   min-height: 44px;
   font-size: 10px;
-  background: #fffefa;
-  border: 1px solid #d6e1cd;
-  color: var(--accent, #316451);
+  background: var(--paper);
+  border: 1px solid var(--attachment-button-line);
+  color: var(--accent);
   white-space: nowrap;
+}
+.savedItem .fileActions button:hover:not(:disabled) {
+  background: var(--hover);
 }
 @media (max-width: 768px) {
   .composer {

@@ -33,6 +33,8 @@ import {
 import styles from "./family.module.scss";
 import { useFamilyVoice, type VoiceScope } from "./use-family-voice";
 import { useFamilyViewport } from "./use-family-viewport";
+import { useFamilyTheme } from "./use-family-theme";
+import { ThemeSettings } from "./theme-settings";
 import {
   AttachmentComposer,
   MessageAttachments,
@@ -308,6 +310,7 @@ async function consumeEvents(
 
 export function FamilyApp() {
   useFamilyViewport();
+  const appearance = useFamilyTheme();
   const [screen, setScreen] = useState<Screen>("loading");
   const [status, setStatus] = useState<FamilySiteStatus | null>(null);
   const [user, setUser] = useState<FamilyUser | null>(null);
@@ -1474,7 +1477,11 @@ export function FamilyApp() {
   // Account-scoped state remains in memory until identity is confirmed or reset.
   if (screen === "loading" || (checking && approved))
     return (
-      <main className={styles.shell}>
+      <main
+        className={styles.shell}
+        style={appearance.style}
+        data-family-theme={appearance.theme.id}
+      >
         <div className={styles.loading} role="status">
           {screen === "loading" ? "正在确认登录状态…" : "正在重新确认登录状态…"}
         </div>
@@ -1486,9 +1493,19 @@ export function FamilyApp() {
     const register = screen === "register";
     const pending = screen === "pending";
     return (
-      <main className={styles.shell}>
+      <main
+        className={styles.shell}
+        style={appearance.style}
+        data-family-theme={appearance.theme.id}
+      >
         <div className={styles.authCard}>
-          <div className={styles.eyebrow}>FAMILY CHAT</div>
+          <div className={styles.authTop}>
+            <div className={styles.eyebrow}>FAMILY CHAT</div>
+            <ThemeSettings
+              theme={appearance.theme}
+              onChange={appearance.setTheme}
+            />
+          </div>
           <h1>
             {setup
               ? "创建管理员账户"
@@ -1683,8 +1700,19 @@ export function FamilyApp() {
 
   if (status?.schemaReady === false)
     return (
-      <main className={styles.shell}>
+      <main
+        className={styles.shell}
+        style={appearance.style}
+        data-family-theme={appearance.theme.id}
+      >
         <section className={styles.authCard}>
+          <div className={styles.authTop}>
+            <div className={styles.eyebrow}>FAMILY CHAT</div>
+            <ThemeSettings
+              theme={appearance.theme}
+              onChange={appearance.setTheme}
+            />
+          </div>
           <h1>{user.role === "admin" ? "更新聊天功能" : "服务正在升级"}</h1>
           <p className={styles.subtitle}>
             {user.role === "admin"
@@ -1724,7 +1752,11 @@ export function FamilyApp() {
     );
 
   return (
-    <main className={styles.shell}>
+    <main
+      className={styles.shell}
+      style={appearance.style}
+      data-family-theme={appearance.theme.id}
+    >
       <div className={styles.app}>
         <aside
           className={`${styles.sidebar} ${
@@ -1866,6 +1898,10 @@ export function FamilyApp() {
                     "新聊天"}
               </h1>
             </div>
+            <ThemeSettings
+              theme={appearance.theme}
+              onChange={appearance.setTheme}
+            />
             {user.role === "admin" && screen !== "admin" ? (
               <button
                 disabled={sending || working || voice.busy}
