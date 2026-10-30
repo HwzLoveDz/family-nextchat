@@ -18,6 +18,7 @@ import {
   listChats,
   newChat,
   updateChat,
+  cancelGeneration,
 } from "@/app/family/server/chats";
 import { modelCatalog } from "@/app/family/server/models";
 import {
@@ -129,6 +130,14 @@ async function handle(
       if (method === "DELETE")
         return finish(json(await deleteChat(path[1], userId)));
     }
+    if (
+      method === "POST" &&
+      path[0] === "chats" &&
+      path.length === 5 &&
+      path[2] === "messages" &&
+      path[4] === "cancel"
+    )
+      return finish(json(await cancelGeneration(path[1], userId, path[3])));
     if (
       method === "POST" &&
       path[0] === "chats" &&

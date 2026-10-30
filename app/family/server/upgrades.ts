@@ -13,6 +13,7 @@ ALTER TABLE family_generation ADD COLUMN IF NOT EXISTS mode text NOT NULL DEFAUL
 ALTER TABLE family_generation ADD COLUMN IF NOT EXISTS source_generation_id uuid
   REFERENCES family_generation(id);
 ALTER TABLE family_generation ADD COLUMN IF NOT EXISTS superseded_at timestamptz;
+ALTER TABLE family_generation ADD COLUMN IF NOT EXISTS cancel_requested_at timestamptz;
 CREATE TABLE IF NOT EXISTS family_schema_version (
   id integer PRIMARY KEY CHECK (id = 1),
   version integer NOT NULL CHECK (version >= 0),
@@ -48,14 +49,15 @@ export async function applicationUpgradeStatus(): Promise<{
   const metadata = (
     await pool.query(`SELECT
       to_regclass('family_schema_version') IS NOT NULL AS version_table_exists,
-      (SELECT count(*) = 5 FROM information_schema.columns
+      (SELECT count(*) = 6 FROM information_schema.columns
         WHERE table_schema = current_schema()
           AND (table_name,column_name,data_type,is_nullable) IN (
             ('family_chat','model','text','YES'),
             ('family_generation','actual_model','text','YES'),
             ('family_generation','mode','text','NO'),
             ('family_generation','source_generation_id','uuid','YES'),
-            ('family_generation','superseded_at','timestamp with time zone','YES')
+            ('family_generation','superseded_at','timestamp with time zone','YES'),
+            ('family_generation','cancel_requested_at','timestamp with time zone','YES')
           )) AS columns_ready`)
   ).rows[0];
   if (metadata?.version_table_exists !== true)

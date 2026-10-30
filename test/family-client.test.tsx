@@ -828,4 +828,111 @@ describe("family client account isolation", () => {
       ).not.toBeInTheDocument(),
     );
   });
+
+  test("stop waits for the server cancellation ACK before aborting and restores the authoritative partial reply", async () => {
+    const order: string[] = [];
+    let signal: AbortSignal | null = null;
+    let acknowledge!: (response: Response) => void;
+    const cancellation = new Promise<Response>((resolve) => {
+      acknowledge = resolve;
+    });
+    const createdAt = "2026-10-30T00:00:00Z";
+    const userMessage = {
+      id: "server-stop-user",
+      role: "user" as const,
+      content: "停止测试",
+      status: "complete" as const,
+      createdAt,
+    };
+    let assistantMessage: FamilyChatDetail["messages"][number] = {
+      id: "server-stop-assistant",
+      role: "assistant",
+      content: "已保存的部分回复",
+      status: "streaming",
+      createdAt,
+    };
+    let generating = false;
+    const baseHandler = requestHandler;
+    requestHandler = async (path, init) => {
+      if (
+        path === "/api/family/chats/a/messages/server-stop-assistant/cancel"
+      ) {
+        order.push("cancel-request");
+        expect(init?.method).toBe("POST");
+        expect(signal?.aborted).toBe(false);
+        return cancellation;
+      }
+      if (path === "/api/family/chats/a") {
+        if (generating) order.push("read-record");
+        return json({
+          chat: chat("a"),
+          messages: generating ? [userMessage, assistantMessage] : [],
+        });
+      }
+      if (path === "/api/family/chats/a/messages") {
+        generating = true;
+        signal = init?.signal as AbortSignal;
+        const body = new NodeReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode(
+                `data: ${JSON.stringify({
+                  type: "start",
+                  userMessage,
+                  assistantMessage,
+                })}\n\n`,
+              ),
+            );
+            signal!.addEventListener(
+              "abort",
+              () => {
+                order.push("stream-abort");
+                controller.error(new DOMException("Aborted", "AbortError"));
+              },
+              { once: true },
+            );
+          },
+        });
+        return { ok: true, status: 200, body } as unknown as Response;
+      }
+      return baseHandler(path, init);
+    };
+    render(<FamilyApp />);
+    fireEvent.click(await screen.findByRole("button", { name: /聊天 a/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "发送消息" })).toBeEnabled(),
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
+      target: { value: "停止测试" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送 ↑" }));
+    fireEvent.click(await screen.findByRole("button", { name: "停止回复" }));
+    await waitFor(() => expect(order).toContain("cancel-request"));
+    expect(screen.getByRole("button", { name: "正在停止…" })).toBeDisabled();
+    expect(order).not.toContain("stream-abort");
+    expect(
+      screen.queryByRole("button", { name: "重试回复" }),
+    ).not.toBeInTheDocument();
+    await act(async () => {
+      assistantMessage = {
+        ...assistantMessage,
+        status: "partial",
+        usage: { source: "unknown", inputTokens: null, outputTokens: null },
+      };
+      order.push("ack");
+      acknowledge(json({ ok: true }));
+      await cancellation;
+    });
+    expect(
+      await screen.findByText("服务器已结束本次生成，已同步保存的回复与用量。"),
+    ).toBeInTheDocument();
+    expect(order.indexOf("stream-abort")).toBeGreaterThan(order.indexOf("ack"));
+    expect(order.indexOf("read-record")).toBeGreaterThan(
+      order.indexOf("stream-abort"),
+    );
+    expect(screen.getByText("已保存的部分回复")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "重试回复" })).toBeEnabled(),
+    );
+  });
 });

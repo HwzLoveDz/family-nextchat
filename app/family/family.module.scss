@@ -335,6 +335,10 @@
   flex: 1;
   font-size: 13px;
 }
+.modelPicker > span {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
 .shell .modelPicker select {
   width: 100%;
   max-width: 100%;

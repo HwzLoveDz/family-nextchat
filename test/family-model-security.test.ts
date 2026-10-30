@@ -122,7 +122,7 @@ describe("family application upgrade boundaries", () => {
     expect(clientQuery).not.toHaveBeenCalled();
   });
 
-  test("a version marker alone cannot enable requests when required columns are missing", async () => {
+  test("an older v2 marker cannot enable requests without the required cancellation column", async () => {
     poolQuery
       .mockResolvedValueOnce(readyMetadata(false))
       .mockResolvedValueOnce(result([{ version: 2 }]));
@@ -133,6 +133,10 @@ describe("family application upgrade boundaries", () => {
       poolQuery.mock.calls.every(([sql]) => /^SELECT\b/.test(sql.trim())),
     ).toBe(true);
     expect(clientQuery).not.toHaveBeenCalled();
+    expect(poolQuery.mock.calls[0][0]).toContain("count(*) = 6");
+    expect(poolQuery.mock.calls[0][0]).toContain(
+      "('family_generation','cancel_requested_at','timestamp with time zone','YES')",
+    );
   });
 
   test.each([undefined, 0, 1, "2", -1])(
@@ -631,4 +635,134 @@ describe("family application upgrade boundaries", () => {
       parser.write(frame({ model: "different-model", choices: [] })),
     ).toThrow(expect.objectContaining({ status: 502 }));
   });
+
+  function cancellationFixture(state?: string) {
+    clientQuery.mockImplementation(async (sql, values) => {
+      if (["BEGIN", "COMMIT", "ROLLBACK"].includes(sql)) return result();
+      if (/SELECT.*FROM family_generation/s.test(sql)) {
+        expect(sql).toContain("FOR UPDATE OF g");
+        expect(sql).toContain("user_id=$2");
+        expect(sql).toContain("deleted_at IS NULL");
+        expect(values).toEqual([chatId, userId, sourceMessageId]);
+        return result(state ? [{ id: generationId, state }] : []);
+      }
+      if (sql.startsWith("UPDATE family_generation")) return result();
+      throw new Error("Unexpected cancellation fixture query");
+    });
+  }
+
+  test("explicit cancel cannot target another owner's assistant message", async () => {
+    cancellationFixture();
+    await expect(
+      chats.cancelGeneration(chatId, userId, sourceMessageId),
+    ).rejects.toMatchObject({ status: 404 });
+    expect(clientQuery.mock.calls.some(([sql]) => /^UPDATE\b/.test(sql))).toBe(
+      false,
+    );
+  });
+
+  test("canceling a running generation marks intent without releasing its running guard", async () => {
+    cancellationFixture("running");
+    await expect(
+      chats.cancelGeneration(chatId, userId, sourceMessageId),
+    ).resolves.toEqual({ ok: true });
+    const updates = clientQuery.mock.calls.filter(([sql]) =>
+      /^UPDATE\b/.test(sql),
+    );
+    expect(updates).toHaveLength(1);
+    expect(updates[0][0]).toContain("cancel_requested_at");
+    expect(updates[0][0]).not.toMatch(/\bSET\s+state\b|finished_at/i);
+    expect(poolQuery).not.toHaveBeenCalled();
+  });
+
+  test("completion committed before cancellation cannot be rewritten as canceled", async () => {
+    cancellationFixture("complete");
+    await expect(
+      chats.cancelGeneration(chatId, userId, sourceMessageId),
+    ).rejects.toMatchObject({ status: 409, code: "ALREADY_COMPLETE" });
+    expect(clientQuery.mock.calls.some(([sql]) => /^UPDATE\b/.test(sql))).toBe(
+      false,
+    );
+  });
+
+  test.each([
+    ["Synthetic partial reply", "partial", "reported", 11, 7],
+    ["", "error", "unknown", null, null],
+  ] as const)(
+    "a committed cancel flag forces %s into %s while preserving %s usage",
+    async (reply, expectedState, source, inputTokens, outputTokens) => {
+      const usage = { source, inputTokens, outputTokens };
+      const started: Parameters<typeof chats.finishGeneration>[0] = {
+        id: generationId,
+        assistantId: sourceMessageId,
+        userMessage: {
+          id: "44444444-4444-4444-8444-444444444444",
+          role: "user",
+          content,
+          status: "complete",
+          createdAt: date.toISOString(),
+        },
+        assistantMessage: {
+          id: sourceMessageId,
+          role: "assistant",
+          content: "",
+          status: "streaming",
+          createdAt: date.toISOString(),
+        },
+        history: [],
+        model: models.allowedModel("gpt-4o-mini"),
+      };
+      clientQuery.mockImplementation(async (sql, values) => {
+        if (["BEGIN", "COMMIT", "ROLLBACK"].includes(sql)) return result();
+        if (sql.startsWith("SELECT cancel_requested_at")) {
+          expect(sql).toContain("FOR UPDATE");
+          expect(values).toEqual([generationId]);
+          return result([{ cancel_requested_at: date }]);
+        }
+        if (sql.startsWith("UPDATE family_generation")) {
+          expect(values).toEqual([
+            expectedState,
+            inputTokens,
+            outputTokens,
+            source,
+            generationId,
+            "gpt-4o-mini-2024-07-18",
+          ]);
+          return result();
+        }
+        if (sql.startsWith("UPDATE family_message")) {
+          expect(values).toEqual([reply, expectedState, sourceMessageId]);
+          return result([
+            {
+              id: sourceMessageId,
+              role: "assistant",
+              content: reply,
+              status: expectedState,
+              created_at: date,
+            },
+          ]);
+        }
+        if (sql.startsWith("UPDATE family_chat")) return result();
+        throw new Error("Unexpected finish-generation fixture query");
+      });
+      const message = await chats.finishGeneration(
+        started,
+        reply,
+        "complete",
+        usage,
+        "gpt-4o-mini-2024-07-18",
+      );
+      expect(message).toMatchObject({
+        status: expectedState,
+        content: reply,
+        usage,
+      });
+      expect(
+        clientQuery.mock.calls.some(([sql]) =>
+          /\b(?:INSERT|DELETE)\b/i.test(sql),
+        ),
+      ).toBe(false);
+      expect(clientQuery.mock.calls.at(-1)?.[0]).toBe("COMMIT");
+    },
+  );
 });

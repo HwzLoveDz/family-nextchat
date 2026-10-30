@@ -190,6 +190,37 @@ interface GenerationStart {
   model: FamilyModel;
   replacedMessageIds?: string[];
 }
+export async function cancelGeneration(
+  chatId: string,
+  userId: string,
+  assistantId: string,
+) {
+  validId(chatId);
+  validId(assistantId);
+  return transaction(async (client) => {
+    const generation = (
+      await client.query(
+        "SELECT g.id,g.state FROM family_generation g JOIN family_chat c ON c.id=g.chat_id JOIN family_message m ON m.generation_id=g.id WHERE c.id=$1 AND c.user_id=$2 AND c.deleted_at IS NULL AND g.user_id=$2 AND m.id=$3 AND m.role='assistant' FOR UPDATE OF g",
+        [chatId, userId, assistantId],
+      )
+    ).rows[0];
+    if (!generation)
+      throw new FamilyApiError(404, "回复不存在。", "MESSAGE_NOT_FOUND");
+    if (generation.state === "complete")
+      throw new FamilyApiError(
+        409,
+        "回复已经完成，停止请求未能抢先生效。",
+        "ALREADY_COMPLETE",
+      );
+    if (generation.state === "running")
+      await client.query(
+        "UPDATE family_generation SET cancel_requested_at=COALESCE(cancel_requested_at,now()) WHERE id=$1 AND state='running'",
+        [generation.id],
+      );
+    // The running guard remains held until the generator finalizes its ledger.
+    return { ok: true as const };
+  });
+}
 type GenerationMode = "send" | "edit" | "retry" | "regenerate";
 interface GenerationIntent {
   mode: GenerationMode;
@@ -570,6 +601,46 @@ export async function generate(
       };
       const work = async () => {
         let lastSave = Date.now();
+        let cancellationRequested = false;
+        let statusFailure: FamilyApiError | undefined;
+        let checkInFlight: Promise<void> | undefined;
+        const checkStatus = async () => {
+          try {
+            const current = (
+              await getPool().query(
+                'SELECT g.cancel_requested_at,u.status FROM family_generation g JOIN "user" u ON u.id=g.user_id WHERE g.id=$1 AND g.user_id=$2',
+                [started.id, userId],
+              )
+            ).rows[0];
+            if (current?.cancel_requested_at) {
+              cancellationRequested = true;
+              abort.abort();
+            } else if (current?.status !== "approved") {
+              statusFailure = new FamilyApiError(
+                403,
+                "账号已停用，生成已停止。",
+              );
+              abort.abort();
+            }
+          } catch {
+            statusFailure = new FamilyApiError(
+              503,
+              "账号或停止状态暂时无法确认，生成已停止。",
+            );
+            abort.abort();
+          }
+        };
+        // Independent of reader.read(): cancellation must also abort a provider
+        // that is waiting for its first token. At most one DB poll may be in flight.
+        const statusTimer = setInterval(() => {
+          if (!checkInFlight && !abort.signal.aborted) {
+            const pending = checkStatus();
+            checkInFlight = pending;
+            void pending.finally(() => {
+              if (checkInFlight === pending) checkInFlight = undefined;
+            });
+          }
+        }, 1000);
         const parser = new OpenAIStreamDecoder((delta) => {
           output += delta;
           emit({ type: "delta", text: delta });
@@ -628,12 +699,6 @@ export async function generate(
                   "UPDATE family_message SET content=$1 WHERE id=$2",
                   [output, started.assistantId],
                 );
-                const approved = await getPool().query(
-                  'SELECT 1 FROM "user" WHERE id=$1 AND status=$2',
-                  [userId, "approved"],
-                );
-                if (!approved.rowCount)
-                  throw new FamilyApiError(403, "账号已停用，生成已停止。");
                 lastSave = Date.now();
               }
             }
@@ -667,6 +732,13 @@ export async function generate(
             usage,
             parser.actualModel,
           );
+          if (message.status !== "complete") {
+            emit({
+              type: "error",
+              message: "生成已停止，已保存收到的内容和实际用量。",
+            });
+            return;
+          }
           emit({ type: "done", message, usage });
         } catch (error) {
           abort.abort();
@@ -687,12 +759,18 @@ export async function generate(
             type: "error",
             message: !saved
               ? "回复已中断，保存未完成，请稍后刷新检查。"
+              : cancellationRequested
+              ? "生成已停止，已保存收到的内容和实际用量。"
+              : statusFailure
+              ? statusFailure.message
               : error instanceof FamilyApiError
               ? error.message
               : "回复已中断，已保存收到的内容，请刷新后查看。",
           });
         } finally {
+          clearInterval(statusTimer);
           clearTimeout(timeout);
+          await checkInFlight;
           request.signal.removeEventListener("abort", onAbort);
           try {
             if (!closed) {
@@ -719,7 +797,7 @@ export async function generate(
     },
   });
 }
-async function finishGeneration(
+export async function finishGeneration(
   started: GenerationStart,
   content: string,
   state: "complete" | "partial" | "error",
@@ -727,10 +805,22 @@ async function finishGeneration(
   actualModel: string | null,
 ) {
   return transaction(async (client) => {
+    const generation = (
+      await client.query(
+        "SELECT cancel_requested_at FROM family_generation WHERE id=$1 FOR UPDATE",
+        [started.id],
+      )
+    ).rows[0];
+    if (!generation) throw new FamilyApiError(404, "回复不存在。");
+    const finalState = generation.cancel_requested_at
+      ? content
+        ? "partial"
+        : "error"
+      : state;
     await client.query(
       "UPDATE family_generation SET state=$1,finished_at=now(),input_tokens=$2,output_tokens=$3,usage_source=$4,actual_model=$6 WHERE id=$5",
       [
-        state,
+        finalState,
         usage.inputTokens,
         usage.outputTokens,
         usage.source,
@@ -740,7 +830,7 @@ async function finishGeneration(
     );
     const result = await client.query(
       "UPDATE family_message SET content=$1,status=$2 WHERE id=$3 RETURNING *",
-      [content, state, started.assistantId],
+      [content, finalState, started.assistantId],
     );
     await client.query(
       "UPDATE family_chat SET updated_at=now() WHERE id=(SELECT chat_id FROM family_generation WHERE id=$1)",

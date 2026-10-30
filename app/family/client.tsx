@@ -45,6 +45,7 @@ class RequestError extends Error {
   constructor(
     message: string,
     public status: number,
+    public code?: string,
   ) {
     super(message);
   }
@@ -254,6 +255,7 @@ export function FamilyApp() {
   const [draftBeforeEdit, setDraftBeforeEdit] = useState("");
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [cancelPending, setCancelPending] = useState(false);
   const [archiveConfirm, setArchiveConfirm] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [adminUsers, setAdminUsers] = useState<FamilyAdminUser[]>([]);
@@ -271,6 +273,18 @@ export function FamilyApp() {
   const currentUser = useRef<FamilyUser | null>(null);
   const controllers = useRef(new Set<AbortController>());
   const streamController = useRef<AbortController | null>(null);
+  const activeGeneration = useRef<{
+    chatId: string;
+    messageId: string;
+    controller: AbortController;
+    cancelAcknowledged: boolean;
+    alreadyComplete: boolean;
+    finished: boolean;
+  } | null>(null);
+  const cancelPendingRef = useRef(false);
+  const stopPollWait = useRef<{ timer: number; resolve: () => void } | null>(
+    null,
+  );
   const channel = useRef<BroadcastChannel | null>(null);
   const logoutIntent = useRef(false);
   const checkSequence = useRef(0);
@@ -288,10 +302,17 @@ export function FamilyApp() {
   const downloadTimers = useRef(new Set<number>());
 
   const request = useCallback(
-    async <T,>(path: string, init: RequestInit = {}): Promise<T> => {
+    async <T,>(
+      path: string,
+      init: RequestInit = {},
+      timeoutMs?: number,
+    ): Promise<T> => {
       const generation = epoch.current;
       const controller = new AbortController();
       controllers.current.add(controller);
+      const timer = timeoutMs
+        ? window.setTimeout(() => controller.abort(), timeoutMs)
+        : undefined;
       try {
         const response = await fetch(path, {
           ...init,
@@ -313,12 +334,14 @@ export function FamilyApp() {
               ? data.message
               : "请求没有完成，请稍后重试。",
             response.status,
+            typeof data.code === "string" ? data.code : undefined,
           );
         return data as T;
       } catch (failure) {
         if (generation !== epoch.current) throw new StaleRequest();
         throw failure;
       } finally {
+        if (timer !== undefined) window.clearTimeout(timer);
         controllers.current.delete(controller);
       }
     },
@@ -332,6 +355,13 @@ export function FamilyApp() {
     controllers.current.forEach((controller) => controller.abort());
     controllers.current.clear();
     streamController.current = null;
+    activeGeneration.current = null;
+    cancelPendingRef.current = false;
+    if (stopPollWait.current) {
+      window.clearTimeout(stopPollWait.current.timer);
+      stopPollWait.current.resolve();
+      stopPollWait.current = null;
+    }
     currentUser.current = null;
     identityVerified.current = false;
     selectedChatRef.current = null;
@@ -359,6 +389,7 @@ export function FamilyApp() {
     setDraftBeforeEdit("");
     setDraft("");
     setSending(false);
+    setCancelPending(false);
     setArchiveConfirm(false);
     setWorking(false);
     setSidebarOpen(false);
@@ -502,6 +533,13 @@ export function FamilyApp() {
       epoch.current += 1;
       controllers.current.forEach((controller) => controller.abort());
       controllers.current.clear();
+      activeGeneration.current = null;
+      cancelPendingRef.current = false;
+      if (stopPollWait.current) {
+        window.clearTimeout(stopPollWait.current.timer);
+        stopPollWait.current.resolve();
+        stopPollWait.current = null;
+      }
       identityVerified.current = false;
       downloadTimers.current.forEach((timer) => window.clearTimeout(timer));
       downloadTimers.current.clear();
@@ -817,6 +855,13 @@ export function FamilyApp() {
       checking ||
       detailLoading ||
       streamController.current ||
+      cancelPendingRef.current ||
+      messages.some(
+        (message) =>
+          message.role === "assistant" &&
+          !message.superseded &&
+          message.status === "streaming",
+      ) ||
       !identityVerified.current ||
       (selectedChat !== null && !activeChat)
     )
@@ -920,6 +965,14 @@ export function FamilyApp() {
           accepted = true;
           const previousAssistantId = assistantId;
           assistantId = streamEvent.assistantMessage.id;
+          activeGeneration.current = {
+            chatId: chatId!,
+            messageId: assistantId,
+            controller,
+            cancelAcknowledged: false,
+            alreadyComplete: false,
+            finished: false,
+          };
           const replaced = new Set([
             userId,
             previousAssistantId,
@@ -964,6 +1017,10 @@ export function FamilyApp() {
       if (generation !== epoch.current || failure instanceof StaleRequest)
         return;
       const aborted = controller.signal.aborted;
+      const cancellation =
+        activeGeneration.current?.controller === controller &&
+        (activeGeneration.current.cancelAcknowledged ||
+          activeGeneration.current.alreadyComplete);
       if (rejectedBeforeStream) {
         setMessages((previous) =>
           previous.filter(
@@ -972,7 +1029,7 @@ export function FamilyApp() {
           ),
         );
         if (mode === "send" || mode === "edit") setDraft(content);
-      } else if (!done) {
+      } else if (!done && !cancellation) {
         setMessages((previous) =>
           previous.map((message) =>
             message.id === assistantId
@@ -982,10 +1039,12 @@ export function FamilyApp() {
         );
       }
       setError(
-        done
+        cancellation
+          ? ""
+          : done
           ? "回复已完成，但会话列表暂时未刷新。请稍后刷新。"
           : aborted
-          ? "已停止回复，已保存的内容以服务器聊天记录为准。"
+          ? "页面连接已断开，服务器可能仍在生成。请刷新确认记录。"
           : errorText(failure),
       );
       if (
@@ -998,10 +1057,17 @@ export function FamilyApp() {
       controllers.current.delete(controller);
       if (streamController.current === controller)
         streamController.current = null;
+      const active =
+        activeGeneration.current?.controller === controller
+          ? activeGeneration.current
+          : null;
+      if (active) active.finished = true;
       if (
         generation === epoch.current &&
         accepted &&
         mode !== "send" &&
+        !active?.cancelAcknowledged &&
+        !active?.alreadyComplete &&
         chatId
       ) {
         try {
@@ -1022,6 +1088,103 @@ export function FamilyApp() {
         }
       }
       if (generation === epoch.current) setSending(false);
+      if (
+        active &&
+        !cancelPendingRef.current &&
+        activeGeneration.current === active
+      )
+        activeGeneration.current = null;
+    }
+  };
+
+  const stopGeneration = async () => {
+    const active = activeGeneration.current;
+    const generation = epoch.current;
+    if (!active || cancelPendingRef.current || !identityVerified.current)
+      return;
+    cancelPendingRef.current = true;
+    setCancelPending(true);
+    setError("");
+    setNotice("正在向服务器请求停止…");
+    try {
+      try {
+        await request(
+          `/api/family/chats/${encodeURIComponent(
+            active.chatId,
+          )}/messages/${encodeURIComponent(active.messageId)}/cancel`,
+          { method: "POST", body: "{}" },
+          10000,
+        );
+        active.cancelAcknowledged = true;
+      } catch (failure) {
+        if (
+          failure instanceof RequestError &&
+          failure.status === 409 &&
+          failure.code === "ALREADY_COMPLETE"
+        )
+          active.alreadyComplete = true;
+        else throw failure;
+      }
+      if (generation !== epoch.current) throw new StaleRequest();
+      active.controller.abort();
+      setNotice("停止请求已送达，正在同步服务器记录…");
+      const deadline = Date.now() + 12000;
+      for (let attempt = 0; attempt < 10 && Date.now() < deadline; attempt++) {
+        const detail = await request<FamilyChatDetail>(
+          `/api/family/chats/${encodeURIComponent(active.chatId)}`,
+          {},
+          4000,
+        );
+        if (generation !== epoch.current) throw new StaleRequest();
+        const message = detail.messages.find(
+          (item) => item.id === active.messageId,
+        );
+        if (selectedChatRef.current === active.chatId) {
+          setMessages(detail.messages);
+          acceptChat(detail.chat);
+        }
+        if (message && message.status !== "streaming") {
+          setNotice(
+            message.status === "complete"
+              ? "回复已经完成，停止请求未赶上本次生成。已同步实际记录与用量。"
+              : "服务器已结束本次生成，已同步保存的回复与用量。",
+          );
+          return;
+        }
+        await new Promise<void>((resolve) => {
+          const timer = window.setTimeout(() => {
+            stopPollWait.current = null;
+            resolve();
+          }, 1000);
+          stopPollWait.current = { timer, resolve };
+        });
+        if (generation !== epoch.current) throw new StaleRequest();
+      }
+      setError(
+        "停止请求已提交，但尚未确认生成结束。请稍后刷新记录，暂勿重试回复。",
+      );
+      setNotice("");
+    } catch (failure) {
+      if (generation !== epoch.current || failure instanceof StaleRequest)
+        return;
+      setNotice("");
+      setError(
+        active.cancelAcknowledged || active.alreadyComplete
+          ? "停止请求已送达，但暂时无法读取最终状态。请稍后刷新记录确认。"
+          : "停止请求尚未确认，模型可能仍在生成。请重试停止或等待回复完成。",
+      );
+      if (
+        failure instanceof RequestError &&
+        [401, 403].includes(failure.status)
+      )
+        void checkIdentity();
+    } finally {
+      if (generation === epoch.current) {
+        cancelPendingRef.current = false;
+        setCancelPending(false);
+        if (active.finished && activeGeneration.current === active)
+          activeGeneration.current = null;
+      }
     }
   };
 
@@ -1069,6 +1232,7 @@ export function FamilyApp() {
   const turnLocked =
     sending ||
     working ||
+    cancelPending ||
     detailLoading ||
     lastAssistantMessage?.status === "streaming";
 
@@ -1553,7 +1717,7 @@ export function FamilyApp() {
                 </button>
                 <button
                   className={styles.secondary}
-                  disabled={turnLocked}
+                  disabled={sending || working || cancelPending}
                   onClick={() =>
                     void run(async () => {
                       await loadChats();
@@ -2026,13 +2190,18 @@ export function FamilyApp() {
                     <br />
                     AI 回答可能有误 · 管理员可查看记录
                   </small>
-                  {sending ? (
+                  {sending || cancelPending ? (
                     <button
                       type="button"
                       className={styles.secondary}
-                      onClick={() => streamController.current?.abort()}
+                      disabled={cancelPending || !activeGeneration.current}
+                      onClick={() => void stopGeneration()}
                     >
-                      停止回复
+                      {cancelPending
+                        ? "正在停止…"
+                        : activeGeneration.current
+                        ? "停止回复"
+                        : "正在连接…"}
                     </button>
                   ) : (
                     <button
@@ -2042,6 +2211,8 @@ export function FamilyApp() {
                         checking ||
                         working ||
                         detailLoading ||
+                        cancelPending ||
+                        lastAssistantMessage?.status === "streaming" ||
                         (selectedChat !== null && !activeChat) ||
                         !chosenModel
                       }
