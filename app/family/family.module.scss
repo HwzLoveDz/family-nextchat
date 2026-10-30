@@ -150,11 +150,17 @@
 }
 .authForm label {
   display: grid;
+  min-width: 0;
   gap: 6px;
   font-size: 14px;
   font-weight: 550;
 }
-.authForm input {
+.shell .authForm input {
+  // Override legacy input[type="password"] { max-width: 50% } locally.
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  text-align: left;
   font-size: 16px;
   font-weight: 400;
 }
