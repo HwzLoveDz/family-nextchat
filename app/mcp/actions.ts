@@ -17,6 +17,7 @@ import {
 import fs from "fs/promises";
 import path from "path";
 import md5 from "spark-md5";
+import { isFamilyMode } from "../family/enabled";
 
 const logger = new MCPClientLogger("MCP Actions");
 const CONFIG_PATH = path.join(process.cwd(), "app/mcp/mcp_config.json");
@@ -24,8 +25,8 @@ const CONFIG_PATH = path.join(process.cwd(), "app/mcp/mcp_config.json");
 const clientsMap = new Map<string, McpClientData>();
 
 // Every exported function in this "use server" module is directly callable over
-// HTTP. MCP therefore requires both an explicit feature flag and a configured,
-// valid deployment access code before exposing config or starting child processes.
+// HTTP. Production/family mode forbids these actions entirely. Only legacy
+// development may use an explicit feature flag plus a valid access code.
 async function assertMcpAuthorized(accessCode: string) {
   if (!(await isMcpEnabled())) {
     throw new Error("MCP is not enabled");
@@ -422,5 +423,6 @@ async function updateMcpConfig(config: McpConfigData): Promise<void> {
 
 // 检查 MCP 是否启用
 export async function isMcpEnabled() {
+  if (isFamilyMode()) return false;
   return process.env.ENABLE_MCP === "true";
 }

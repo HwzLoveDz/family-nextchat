@@ -7,10 +7,14 @@ import type { Metadata, Viewport } from "next";
 import { SpeedInsights } from "@vercel/speed-insights/next";
 import { GoogleTagManager, GoogleAnalytics } from "@next/third-parties/google";
 import { getServerSideConfig } from "./config/server";
+import { headers } from "next/headers";
+import { isFamilyMode } from "./family/enabled";
 
 export const metadata: Metadata = {
-  title: "NextChat",
-  description: "Your personal AI assistant.",
+  title: isFamilyMode() ? "Harvey 家庭 AI" : "NextChat",
+  description: isFamilyMode()
+    ? "家人专用的 AI 助手。"
+    : "Your personal AI assistant.",
   appleWebApp: {
     title: "NextChat",
     statusBarStyle: "default",
@@ -20,34 +24,37 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
   themeColor: [
     { media: "(prefers-color-scheme: light)", color: "#fafafa" },
     { media: "(prefers-color-scheme: dark)", color: "#151515" },
   ],
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const serverConfig = getServerSideConfig();
+  const familyMode = isFamilyMode();
+  // Nonces require per-request rendering. Do not evaluate legacy configuration
+  // or mount its scripts in the isolated family application.
+  if (familyMode) await headers();
+  const serverConfig = familyMode ? null : getServerSideConfig();
 
   return (
-    <html lang="en">
+    <html lang={familyMode ? "zh-CN" : "en"}>
       <head>
-        <meta name="config" content={JSON.stringify(getClientConfig())} />
-        <meta
-          name="viewport"
-          content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
-        />
-        <link
-          rel="manifest"
-          href="/site.webmanifest"
-          crossOrigin="use-credentials"
-        ></link>
-        <script src="/serviceWorkerRegister.js" defer></script>
+        {!familyMode && (
+          <>
+            <meta name="config" content={JSON.stringify(getClientConfig())} />
+            <link
+              rel="manifest"
+              href="/site.webmanifest"
+              crossOrigin="use-credentials"
+            />
+            <script src="/serviceWorkerRegister.js" defer />
+          </>
+        )}
       </head>
       <body>
         {children}

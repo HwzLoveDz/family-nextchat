@@ -1,18 +1,7 @@
-import { Analytics } from "@vercel/analytics/react";
-import { Home } from "./components/home";
-import { getServerSideConfig } from "./config/server";
+import { FamilyApp } from "./family/client";
 
-const serverConfig = getServerSideConfig();
-
-export default async function App() {
-  return (
-    <>
-      <Home />
-      {serverConfig?.isVercel && (
-        <>
-          <Analytics />
-        </>
-      )}
-    </>
-  );
+// This fork is a private family application. Missing deployment configuration
+// must never bring back the anonymous legacy application or its local stores.
+export default function App() {
+  return <FamilyApp />;
 }

@@ -1,0 +1,73 @@
+/** Public JSON contracts shared by the family UI and server. No secrets here. */
+export type FamilyRole = "admin" | "member";
+export type FamilyStatus = "pending" | "approved" | "disabled";
+export type FamilyMessageStatus =
+  | "complete"
+  | "partial"
+  | "error"
+  | "streaming";
+export interface FamilyUser {
+  id: string;
+  name: string;
+  email: string;
+  role: FamilyRole;
+  status: FamilyStatus;
+}
+export interface FamilySiteStatus {
+  deploymentEnvironment?: "preview" | "production" | "development";
+  ready: boolean;
+  needsSetup: boolean;
+  dbConfigured: boolean;
+  notice: string;
+}
+export interface FamilyMe {
+  user: FamilyUser;
+  sessionExpiresAt: string;
+}
+export interface FamilyChat {
+  id: string;
+  title: string;
+  archived: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface FamilyUsage {
+  source: "reported" | "unknown";
+  inputTokens: number | null;
+  outputTokens: number | null;
+}
+export interface FamilyMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  status: FamilyMessageStatus;
+  createdAt: string;
+  usage?: FamilyUsage;
+}
+export interface FamilyChatDetail {
+  chat: FamilyChat;
+  messages: FamilyMessage[];
+}
+export interface FamilyAdminUser extends FamilyUser {
+  createdAt: string;
+  lastSeenAt: string | null;
+  activeSeconds: number;
+  inputTokens: number;
+  outputTokens: number;
+  unknownUsageRequests: number;
+}
+export type FamilyStreamEvent =
+  | {
+      type: "start";
+      userMessage: FamilyMessage;
+      assistantMessage: FamilyMessage;
+    }
+  | { type: "delta"; text: string }
+  | { type: "done"; message: FamilyMessage; usage: FamilyUsage }
+  | { type: "error"; message: string };
+export interface FamilyError {
+  error: string;
+  code?: string;
+}
+export const FAMILY_NOTICE =
+  "仅供受邀家人使用。管理员可查看账号、聊天内容、模型回复、用量和前台活跃时长估算。AI 回答可能有误。";

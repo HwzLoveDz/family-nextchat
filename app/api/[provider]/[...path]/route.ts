@@ -1,5 +1,7 @@
 import { ApiPath } from "@/app/constant";
 import { NextRequest, NextResponse } from "next/server";
+import { isFamilyMode } from "@/app/family/enabled";
+import { legacyApiDisabled } from "@/app/api/legacy-disabled";
 import { handle as openaiHandler } from "../../openai";
 import { handle as azureHandler } from "../../azure";
 import { handle as googleHandler } from "../../google";
@@ -20,6 +22,7 @@ async function handle(
   req: NextRequest,
   context: { params: Promise<{ provider: string; path: string[] }> },
 ) {
+  if (isFamilyMode()) return legacyApiDisabled();
   const params = await context.params;
   const apiPath = `/api/${params.provider}`;
   console.log(`[${params.provider} Route] params `, params);

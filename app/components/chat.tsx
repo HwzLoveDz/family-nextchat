@@ -988,7 +988,7 @@ export function ShortcutKeyModal(props: { onClose: () => void }) {
   );
 }
 
-function _Chat() {
+function ChatSessionView() {
   type RenderMessage = ChatMessage & { preview?: boolean };
 
   const chatStore = useChatStore();
@@ -2169,5 +2169,5 @@ function _Chat() {
 export function Chat() {
   const chatStore = useChatStore();
   const session = chatStore.currentSession();
-  return <_Chat key={session.id}></_Chat>;
+  return <ChatSessionView key={session.id}></ChatSessionView>;
 }

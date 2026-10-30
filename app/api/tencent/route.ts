@@ -4,10 +4,13 @@ import { prettyObject } from "@/app/utils/format";
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/app/api/auth";
 import { getHeader } from "@/app/utils/tencent";
+import { isFamilyMode } from "@/app/family/enabled";
+import { legacyApiDisabled } from "@/app/api/legacy-disabled";
 
 const serverConfig = getServerSideConfig();
 
 async function handle(req: NextRequest) {
+  if (isFamilyMode()) return legacyApiDisabled();
   if (req.method === "OPTIONS") {
     return NextResponse.json({ body: "OK" }, { status: 200 });
   }

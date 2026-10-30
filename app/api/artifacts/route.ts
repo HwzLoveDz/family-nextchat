@@ -1,8 +1,11 @@
 import md5 from "spark-md5";
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSideConfig } from "@/app/config/server";
+import { isFamilyMode } from "@/app/family/enabled";
+import { legacyApiDisabled } from "@/app/api/legacy-disabled";
 
 async function handle(req: NextRequest) {
+  if (isFamilyMode()) return legacyApiDisabled();
   const serverConfig = getServerSideConfig();
   const storeUrl = () =>
     `https://api.cloudflare.com/client/v4/accounts/${serverConfig.cloudflareAccountId}/storage/kv/namespaces/${serverConfig.cloudflareKVNamespaceId}`;

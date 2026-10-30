@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isFamilyMode } from "@/app/family/enabled";
+import { legacyApiDisabled } from "@/app/api/legacy-disabled";
 
 async function handle(
   req: NextRequest,
   context: { params: Promise<{ action: string; key: string[] }> },
 ) {
+  if (isFamilyMode()) return legacyApiDisabled();
   const params = await context.params;
   const requestUrl = new URL(req.url);
   const endpoint = requestUrl.searchParams.get("endpoint");

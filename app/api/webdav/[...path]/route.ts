@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { STORAGE_KEY, internalAllowedWebDavEndpoints } from "../../../constant";
 import { getServerSideConfig } from "@/app/config/server";
+import { isFamilyMode } from "@/app/family/enabled";
+import { legacyApiDisabled } from "@/app/api/legacy-disabled";
 
 const config = getServerSideConfig();
 
@@ -21,6 +23,7 @@ async function handle(
   req: NextRequest,
   { params }: { params: Promise<{ path: string[] }> },
 ) {
+  if (isFamilyMode()) return legacyApiDisabled();
   if (req.method === "OPTIONS") {
     return NextResponse.json({ body: "OK" }, { status: 200 });
   }

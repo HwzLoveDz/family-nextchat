@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { getServerSideConfig } from "../config/server";
 import md5 from "spark-md5";
 import { ACCESS_CODE_PREFIX, ModelProvider } from "../constant";
+import { isFamilyMode } from "../family/enabled";
 
 function parseApiKey(bearToken: string) {
   const token = bearToken.trim().replaceAll("Bearer ", "").trim();
@@ -14,6 +15,9 @@ function parseApiKey(bearToken: string) {
 }
 
 export function auth(req: NextRequest, modelProvider: ModelProvider) {
+  if (isFamilyMode()) {
+    return { error: true, msg: "Legacy APIs are disabled in family mode." };
+  }
   const authToken = req.headers.get("Authorization") ?? "";
 
   // check if it is openai api key or user token
