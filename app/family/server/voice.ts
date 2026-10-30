@@ -21,7 +21,7 @@ function id(value: unknown): string {
   return value;
 }
 function providerKey(): string {
-  const key = process.env.OPENAI_API_KEY;
+  const key = process.env.OPENAI_API_KEY?.trim();
   if (!key)
     throw new FamilyApiError(
       503,

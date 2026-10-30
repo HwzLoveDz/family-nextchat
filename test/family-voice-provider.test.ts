@@ -1,9 +1,11 @@
 /** @jest-environment node */
 import { jest } from "@jest/globals";
 import { EventEmitter } from "node:events";
+import { Readable } from "node:stream";
 
 class FixtureSocket extends EventEmitter {
   static instances: FixtureSocket[] = [];
+  static constructorError: Error | null = null;
   send = jest.fn<(text: string) => void>();
   terminate = jest.fn();
   constructor(
@@ -11,6 +13,7 @@ class FixtureSocket extends EventEmitter {
     readonly options: Record<string, any>,
   ) {
     super();
+    if (FixtureSocket.constructorError) throw FixtureSocket.constructorError;
     FixtureSocket.instances.push(this);
   }
 }
@@ -19,6 +22,8 @@ jest.unstable_mockModule("ws", () => ({ default: FixtureSocket }));
 const media = await import("@/app/family/server/voice-media");
 const provider = await import("@/app/family/server/voice-provider");
 const initialFetch = global.fetch;
+const diagnostics: unknown[][] = [];
+let restoreDiagnostics = () => {};
 const encode = (event: unknown) =>
   new TextEncoder().encode(JSON.stringify(event));
 const frame = (socket: FixtureSocket, event: unknown) =>
@@ -47,10 +52,19 @@ function done(status = "completed") {
 }
 beforeEach(() => {
   FixtureSocket.instances.length = 0;
+  FixtureSocket.constructorError = null;
+  diagnostics.length = 0;
+  const spy = jest
+    .spyOn(console, "error")
+    .mockImplementation((...args: unknown[]) => {
+      diagnostics.push(args);
+    });
+  restoreDiagnostics = () => spy.mockRestore();
   global.fetch = jest.fn<typeof fetch>(async () => {
     throw new Error("No outbound network permitted in voice tests");
   });
 });
+afterEach(() => restoreDiagnostics());
 afterAll(() => {
   global.fetch = initialFetch;
 });
@@ -220,6 +234,123 @@ describe("current provider request boundaries and WebSocket cleanup", () => {
     expect(socket.terminate).toHaveBeenCalledTimes(1);
     expect(socket.send).not.toHaveBeenCalled();
     expect(evidence.usage.inputTokens).toBeNull();
+  });
+  test("constructor failure logs only fixed handshake phase and recognized code", async () => {
+    FixtureSocket.constructorError = Object.assign(
+      new Error("sk-proj-synthetic-secret-not-for-logs"),
+      { code: "ERR_INVALID_CHAR" },
+    );
+    await expect(
+      provider.requestSpeech(
+        "fixture-not-real",
+        "private-spoken-text",
+        new AbortController().signal,
+        provider.newVoiceEvidence(),
+      ),
+    ).rejects.toMatchObject({ code: "VOICE_PROVIDER_ERROR" });
+    expect(diagnostics).toEqual([
+      [
+        "[FamilyVoice] realtime failure",
+        { phase: "handshake", networkCode: "ERR_INVALID_CHAR" },
+      ],
+    ]);
+    expect(JSON.stringify(diagnostics)).not.toContain(
+      "sk-proj-synthetic-secret",
+    );
+    expect(JSON.stringify(diagnostics)).not.toContain("private-spoken-text");
+  });
+  test("unexpected handshake JSON logs only status and whitelisted provider fields", async () => {
+    const pending = provider.requestSpeech(
+      "fixture-not-real",
+      "private-spoken-text",
+      new AbortController().signal,
+      provider.newVoiceEvidence(),
+    );
+    const rejection = expect(pending).rejects.toMatchObject({
+      code: "VOICE_PROVIDER_ERROR",
+    });
+    const response = Object.assign(
+      Readable.from([
+        Buffer.from(
+          JSON.stringify({
+            error: {
+              code: "invalid_api_key",
+              type: "invalid_request_error",
+              param: "response.audio.output.voice",
+              message: "sk-proj-synthetic-secret",
+            },
+            audio: "private-audio-data",
+            text: "private-spoken-text",
+          }),
+        ),
+      ]),
+      { statusCode: 401 },
+    );
+    FixtureSocket.instances[0].emit("unexpected-response", {}, response);
+    await rejection;
+    expect(diagnostics).toEqual([
+      [
+        "[FamilyVoice] realtime failure",
+        {
+          phase: "handshake",
+          httpStatus: 401,
+          eventCode: "invalid_api_key",
+          eventType: "invalid_request_error",
+          param: "response.audio.output.voice",
+        },
+      ],
+    ]);
+    expect(JSON.stringify(diagnostics)).not.toMatch(
+      /synthetic-secret|private-audio|private-spoken/,
+    );
+    expect(response.destroyed).toBe(true);
+    expect(FixtureSocket.instances[0].terminate).toHaveBeenCalledTimes(1);
+  });
+  test("over-limit handshake body and unrecognized ASCII fields never leak", async () => {
+    const pending = provider.requestSpeech(
+      "fixture-not-real",
+      "private-spoken-text",
+      new AbortController().signal,
+      provider.newVoiceEvidence(),
+    );
+    const rejection = expect(pending).rejects.toMatchObject({
+      code: "VOICE_PROVIDER_ERROR",
+    });
+    const response = Object.assign(
+      Readable.from([Buffer.from("sk-proj-synthetic-secret".repeat(1000))]),
+      { statusCode: 403 },
+    );
+    FixtureSocket.instances[0].emit("unexpected-response", {}, response);
+    await rejection;
+    expect(diagnostics).toEqual([
+      [
+        "[FamilyVoice] realtime failure",
+        { phase: "handshake", httpStatus: 403 },
+      ],
+    ]);
+    const decoder = new provider.RealtimeSpeechDecoder(
+      provider.newVoiceEvidence(),
+    );
+    expect(() =>
+      decoder.write(
+        encode({
+          type: "error",
+          error: {
+            code: "sk-proj-synthetic-secret",
+            type: "privateText",
+            param: "private_text",
+            message: "unlogged",
+          },
+        }),
+      ),
+    ).toThrow();
+    expect(diagnostics.at(-1)).toEqual([
+      "[FamilyVoice] realtime failure",
+      { phase: "provider-event" },
+    ]);
+    expect(JSON.stringify(diagnostics)).not.toMatch(
+      /synthetic-secret|privateText|private_text|unlogged/,
+    );
   });
   test("provider close before done cannot return incomplete audio", async () => {
     const evidence = provider.newVoiceEvidence();

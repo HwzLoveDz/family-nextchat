@@ -1,6 +1,7 @@
 import "server-only";
 import WebSocket from "ws";
 import type { RawData } from "ws";
+import type { IncomingMessage } from "node:http";
 import type { FamilyUsage } from "../types";
 import { FamilyApiError } from "./errors";
 import {
@@ -31,6 +32,166 @@ const providerError = () =>
     "语音服务暂时不可用，请稍后再试。",
     "VOICE_PROVIDER_ERROR",
   );
+
+type DiagnosticPhase =
+  | "handshake"
+  | "socket"
+  | "provider-event"
+  | "binary"
+  | "parse"
+  | "close";
+const networkCodes = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "ECONNABORTED",
+  "ERR_INVALID_CHAR",
+  "ERR_HTTP_INVALID_HEADER_VALUE",
+  "ERR_INVALID_ARG_TYPE",
+  "ERR_SOCKET_CLOSED",
+  "CERT_HAS_EXPIRED",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH",
+  "WS_ERR_INVALID_UTF8",
+  "WS_ERR_UNEXPECTED_RSV_1",
+]);
+const providerCodes = new Set([
+  "invalid_api_key",
+  "insufficient_quota",
+  "rate_limit_exceeded",
+  "model_not_found",
+  "permission_denied",
+  "unsupported_country_region_territory",
+  "invalid_request_error",
+  "server_error",
+  "session_expired",
+  "invalid_value",
+  "missing_required_parameter",
+  "unknown_parameter",
+  "unsupported_parameter",
+  "unsupported_value",
+  "context_length_exceeded",
+  "invalid_model",
+  "invalid_event",
+  "billing_hard_limit_reached",
+]);
+const providerTypes = new Set([
+  "invalid_request_error",
+  "server_error",
+  "rate_limit_error",
+  "authentication_error",
+  "permission_error",
+  "not_found_error",
+  "bad_request_error",
+  "overloaded_error",
+  "api_error",
+]);
+const providerParams = new Set([
+  "model",
+  "response",
+  "response.conversation",
+  "response.input",
+  "response.input[0]",
+  "response.input[0].content",
+  "response.input[0].content[0].type",
+  "response.input[0].content[0].text",
+  "response.output_modalities",
+  "response.audio",
+  "response.audio.output",
+  "response.audio.output.format",
+  "response.audio.output.format.type",
+  "response.audio.output.format.rate",
+  "response.audio.output.voice",
+  "response.max_output_tokens",
+  "response.instructions",
+  "input",
+  "output_modalities",
+  "audio.output.format",
+  "audio.output.voice",
+  "max_output_tokens",
+]);
+function allowedDiagnostic(
+  value: unknown,
+  allowed: Set<string>,
+): string | undefined {
+  return typeof value === "string" &&
+    value.length <= 80 &&
+    /^[a-zA-Z0-9_.\[\]-]+$/.test(value) &&
+    allowed.has(value)
+    ? value
+    : undefined;
+}
+function realtimeDiagnostic(
+  phase: DiagnosticPhase,
+  fields: {
+    httpStatus?: unknown;
+    closeCode?: unknown;
+    networkCode?: unknown;
+    eventCode?: unknown;
+    eventType?: unknown;
+    param?: unknown;
+  } = {},
+) {
+  // Private fixed-shape metadata only. Never log a raw error/message/frame or key.
+  const values: Record<string, string | number> = { phase };
+  if (
+    typeof fields.httpStatus === "number" &&
+    Number.isInteger(fields.httpStatus) &&
+    fields.httpStatus >= 100 &&
+    fields.httpStatus <= 599
+  )
+    values.httpStatus = fields.httpStatus;
+  if (
+    typeof fields.closeCode === "number" &&
+    Number.isInteger(fields.closeCode) &&
+    fields.closeCode >= 1000 &&
+    fields.closeCode <= 4999
+  )
+    values.closeCode = fields.closeCode;
+  for (const [name, allowed] of [
+    ["networkCode", networkCodes],
+    ["eventCode", providerCodes],
+    ["eventType", providerTypes],
+    ["param", providerParams],
+  ] as const) {
+    const value = allowedDiagnostic(fields[name], allowed);
+    if (value) values[name] = value;
+  }
+  console.error("[FamilyVoice] realtime failure", values);
+}
+function networkCode(error: unknown): unknown {
+  return error && typeof error === "object" && "code" in error
+    ? error.code
+    : undefined;
+}
+async function handshakeDetails(
+  response: IncomingMessage,
+): Promise<{ eventCode?: unknown; eventType?: unknown; param?: unknown }> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  try {
+    for await (const chunk of response) {
+      const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      bytes += value.length;
+      if (bytes > 8192) {
+        response.destroy();
+        return {};
+      }
+      chunks.push(value);
+    }
+    const error = JSON.parse(Buffer.concat(chunks, bytes).toString("utf8"))
+      ?.error;
+    return error && typeof error === "object"
+      ? { eventCode: error.code, eventType: error.type, param: error.param }
+      : {};
+  } catch {
+    return {};
+  }
+}
 
 async function providerJson(response: Response): Promise<Record<string, any>> {
   const reader = response.body?.getReader();
@@ -158,7 +319,14 @@ export class RealtimeSpeechDecoder {
       throw providerError();
     }
     if (!event || typeof event !== "object") throw providerError();
-    if (event.type === "error") throw providerError(); // Never echo error.message.
+    if (event.type === "error") {
+      realtimeDiagnostic("provider-event", {
+        eventCode: event.error?.code,
+        eventType: event.error?.type,
+        param: event.error?.param,
+      });
+      throw providerError(); // Never echo error.message.
+    }
     if (event.type === "session.created")
       this.evidence.actualModel = safeVoiceModel(event.session?.model);
     if (event.type === "response.created") {
@@ -239,12 +407,16 @@ export async function requestSpeech(
     throw new FamilyApiError(499, "语音请求已取消。", "VOICE_CANCELLED");
   return new Promise((resolve, reject) => {
     let socket: WebSocket | undefined;
+    let handshakeResponse: IncomingMessage | undefined;
+    let diagnosticTimer: ReturnType<typeof setTimeout> | undefined;
     let settled = false;
     const parser = new RealtimeSpeechDecoder(evidence);
     const finish = (error?: unknown, audio?: Uint8Array) => {
       if (settled) return;
       settled = true;
       signal.removeEventListener("abort", onAbort);
+      clearTimeout(diagnosticTimer);
+      handshakeResponse?.destroy();
       if (socket) {
         socket.removeAllListeners();
         socket.on("error", () => {}); // terminate during a handshake may emit error.
@@ -277,27 +449,50 @@ export async function requestSpeech(
         }
         try {
           socket!.send(JSON.stringify(speechResponseEvent(text)));
-        } catch {
+        } catch (error) {
+          realtimeDiagnostic("socket", { networkCode: networkCode(error) });
           finish(providerError());
         }
       });
       socket.on("message", (data, binary) => {
         try {
-          if (binary) throw providerError();
+          if (binary) {
+            realtimeDiagnostic("binary");
+            finish(providerError());
+            return;
+          }
           if (parser.write(rawBytes(data))) finish(undefined, parser.wav());
         } catch (error) {
+          realtimeDiagnostic("parse");
           finish(error);
         }
       });
-      socket.once("error", () => finish(providerError()));
-      socket.once("close", () => finish(providerError()));
-      socket.once("unexpected-response", (_request, response) => {
-        response.resume();
-        response.destroy();
+      socket.once("error", (error) => {
+        realtimeDiagnostic("socket", { networkCode: networkCode(error) });
         finish(providerError());
       });
+      socket.once("close", (code) => {
+        realtimeDiagnostic("close", { closeCode: code });
+        finish(providerError());
+      });
+      socket.once("unexpected-response", (_request, response) => {
+        handshakeResponse = response;
+        diagnosticTimer = setTimeout(() => {
+          realtimeDiagnostic("handshake", { httpStatus: response.statusCode });
+          finish(providerError());
+        }, 2000);
+        void handshakeDetails(response).then((details) => {
+          if (settled) return;
+          realtimeDiagnostic("handshake", {
+            httpStatus: response.statusCode,
+            ...details,
+          });
+          finish(providerError());
+        });
+      });
       if (signal.aborted) onAbort();
-    } catch {
+    } catch (error) {
+      realtimeDiagnostic("handshake", { networkCode: networkCode(error) });
       finish(providerError());
     }
   });

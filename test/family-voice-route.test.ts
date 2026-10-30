@@ -241,8 +241,10 @@ test("a duplicate request stops at ledger and cannot issue another provider requ
   expect(finish).not.toHaveBeenCalled();
 });
 test("successful transcription preserves unknown tokens, measured seconds and reported seconds separately", async () => {
+  process.env.OPENAI_API_KEY = " \r\nsynthetic-provider-key-not-real \n";
   const response = await route("transcribe", transcriptionRequest());
   expect(response.status).toBe(200);
+  expect(transcribe.mock.calls[0][0]).toBe("synthetic-provider-key-not-real");
   expect(await response.json()).toEqual({ text: "识别结果", usage: unknown() });
   expect(begin).toHaveBeenCalledWith(
     "fixture-owner",
