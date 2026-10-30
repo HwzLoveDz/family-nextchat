@@ -8,6 +8,8 @@ export class OpenAIStreamDecoder {
   private buffer = "";
   content = "";
   complete = false;
+  actualModel: string | null = null;
+  finishReason: string | null = null;
   usage: FamilyUsage = {
     source: "unknown",
     inputTokens: null,
@@ -53,6 +55,14 @@ export class OpenAIStreamDecoder {
     }
     if (data.error) throw new FamilyApiError(502, "模型服务中断，请稍后重试。");
     if (
+      typeof data.model === "string" &&
+      /^[a-zA-Z0-9._:-]{1,200}$/.test(data.model)
+    ) {
+      if (this.actualModel && this.actualModel !== data.model)
+        throw new FamilyApiError(502, "模型返回格式无效。");
+      this.actualModel = data.model;
+    }
+    if (
       data.usage &&
       Number.isSafeInteger(data.usage.prompt_tokens) &&
       Number.isSafeInteger(data.usage.completion_tokens) &&
@@ -72,6 +82,9 @@ export class OpenAIStreamDecoder {
         throw new FamilyApiError(502, "回复过长，已停止生成。");
       this.onDelta(delta);
     }
-    if (data.choices?.[0]?.finish_reason) this.complete = true;
+    if (data.choices?.[0]?.finish_reason) {
+      this.finishReason = data.choices[0].finish_reason;
+      this.complete = true;
+    }
   }
 }

@@ -97,6 +97,68 @@ try {
   capped = true;
 }
 check(capped, "oversized model output is stopped");
+const resolvedModel = new OpenAIStreamDecoder(() => {});
+resolvedModel.write(
+  encoder.encode(
+    frame({
+      model: "gpt-6.1-sol-2026-09-29",
+      choices: [{ delta: { content: "已连接" }, finish_reason: null }],
+    }) +
+      frame({
+        model: "gpt-6.1-sol-2026-09-29",
+        choices: [{ delta: {}, finish_reason: "stop" }],
+        usage: { prompt_tokens: 9, completion_tokens: 4 },
+      }) +
+      "data: [DONE]\n\n",
+  ),
+);
+resolvedModel.end();
+check(
+  resolvedModel.actualModel === "gpt-6.1-sol-2026-09-29" &&
+    resolvedModel.finishReason === "stop",
+  "actual upstream snapshot and finish reason are retained",
+);
+check(
+  resolvedModel.usage.source === "reported" &&
+    resolvedModel.usage.outputTokens === 4,
+  "reasoning-model usage stays provider reported",
+);
+const unknownModel = new OpenAIStreamDecoder(() => {});
+unknownModel.write(encoder.encode(delta("未报告模型") + "data: [DONE]\n\n"));
+unknownModel.end();
+check(
+  unknownModel.actualModel === null,
+  "missing actual upstream model is not fabricated from requested model",
+);
+const changedModel = new OpenAIStreamDecoder(() => {});
+let changedRejected = false;
+try {
+  changedModel.write(
+    encoder.encode(
+      frame({ model: "gpt-4o-mini-2024-07-18" }) +
+        frame({ model: "gpt-6.1-sol-2026-09-29" }),
+    ),
+  );
+} catch {
+  changedRejected = true;
+}
+check(changedRejected, "a stream cannot silently switch actual models");
+const limited = new OpenAIStreamDecoder(() => {});
+limited.write(
+  encoder.encode(
+    frame({
+      choices: [{ delta: { content: "有限内容" }, finish_reason: "length" }],
+      usage: { prompt_tokens: 3, completion_tokens: 2048 },
+    }) + "data: [DONE]\n\n",
+  ),
+);
+limited.end();
+check(
+  limited.finishReason === "length" &&
+    limited.content === "有限内容" &&
+    limited.usage.outputTokens === 2048,
+  "token-limited reply retains finish reason, partial text and charged usage",
+);
 console.log(
   `Family upstream stream tests: ${passed} checks passed. Synthetic bytes only; no network, key or database used.`,
 );

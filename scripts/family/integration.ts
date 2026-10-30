@@ -93,6 +93,8 @@ async function main() {
   process.env.BETTER_AUTH_SECRET = randomBytes(32).toString("base64url");
   process.env.FAMILY_BOOTSTRAP_TOKEN = randomBytes(32).toString("base64url");
   delete process.env.OPENAI_API_KEY;
+  process.env.FAMILY_OPENAI_MODEL = "gpt-4o-mini";
+  process.env.FAMILY_OPENAI_MODELS = "gpt-4o-mini,gpt-6.1-sol";
   // No test is permitted to call any external model/provider or network fetch.
   globalThis.fetch = async () => {
     throw new Error("OUTBOUND_FETCH_FORBIDDEN_IN_TEST");
@@ -455,7 +457,7 @@ async function main() {
       if (timer) clearTimeout(timer);
     }
   };
-  process.env.FAMILY_OPENAI_MODEL = "fixture-server-model";
+  process.env.FAMILY_OPENAI_MODEL = "gpt-4o-mini";
   globalThis.fetch = async (input, init) => {
     check(
       String(input) === "https://api.openai.com/v1/chat/completions",
@@ -463,9 +465,8 @@ async function main() {
     );
     const payload = JSON.parse(String(init?.body));
     check(
-      payload.model === "fixture-server-model" &&
-        payload.max_completion_tokens === 2048,
-      "server model and output cap override client model claims",
+      payload.model === "gpt-4o-mini" && payload.max_completion_tokens === 2048,
+      "server-validated selected model and output cap reach the fixed upstream",
     );
     return new Response(
       new ReadableStream({
@@ -496,7 +497,7 @@ async function main() {
     {
       content: "Synthetic complete fixture",
       requestId: completeRequest,
-      model: "untrusted-client-model",
+      model: "gpt-4o-mini",
     },
     cookieA,
   );

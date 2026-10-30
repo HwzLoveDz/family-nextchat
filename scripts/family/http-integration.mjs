@@ -243,6 +243,11 @@ async function main() {
     preflight.headers.get("cache-control")?.includes("no-store"),
     "public status disables caching",
   );
+  const skipModelChecks = process.env.FAMILY_E2E_SKIP_MODEL_CHECKS === "1";
+  check(
+    skipModelChecks || status.modelConfigured === false,
+    "model-configured preview explicitly skips all generation requests",
+  );
   if (privateFixtureOutput !== undefined) {
     stage = "save in-progress preview fixture before setup";
     privateFixtureData = {
@@ -559,29 +564,34 @@ async function main() {
     ),
     "invalid idempotency request identifier is rejected",
   );
-  check(
-    httpStatus(
-      await family(
-        "POST",
-        `chats/${chat.id}/messages`,
-        { content: "Fixture only", requestId: randomUUID() },
-        memberA,
+  if (!skipModelChecks) {
+    check(
+      httpStatus(
+        await family(
+          "POST",
+          `chats/${chat.id}/messages`,
+          { content: "Fixture only", requestId: randomUUID() },
+          memberA,
+        ),
+        503,
       ),
-      503,
-    ),
-    "missing model key fails closed without real model invocation",
-  );
-  const unchanged = await familyJson(
-    "GET",
-    `chats/${chat.id}`,
-    undefined,
-    memberA,
-    "owner reads conversation after missing model configuration",
-  );
-  check(
-    unchanged.messages.length === 0,
-    "missing model key does not persist a fake reply or generation",
-  );
+      "missing model key fails closed without real model invocation",
+    );
+    const unchanged = await familyJson(
+      "GET",
+      `chats/${chat.id}`,
+      undefined,
+      memberA,
+      "owner reads conversation after missing model configuration",
+    );
+    check(
+      unchanged.messages.length === 0,
+      "missing model key does not persist a fake reply or generation",
+    );
+  } else
+    console.log(
+      "SKIP missing-key generation checks; no model request is sent.",
+    );
   const eventId = randomUUID();
   check(
     httpStatus(await family("POST", "activity", { eventId }, memberA), 200),
@@ -717,7 +727,7 @@ async function main() {
     `Family preview HTTP E2E: ${passed} checks passed. Fixture accounts remain only in the confirmed preview database.`,
   );
   console.log(
-    "No provider key was supplied, no model request was performed. SSE/provider usage require the separate isolated mock/PG tests.",
+    "No provider key is read or supplied by this runner. Configured-model previews skip generation; missing-key previews verify failure before upstream. SSE/provider usage require separate acceptance.",
   );
 }
 main()

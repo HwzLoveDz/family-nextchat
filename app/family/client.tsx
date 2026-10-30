@@ -17,6 +17,9 @@ import {
   type FamilyChatDetail,
   type FamilyMe,
   type FamilyMessage,
+  type FamilyMessageRequest,
+  type FamilyModel,
+  type FamilyModelCatalog,
   type FamilySiteStatus,
   type FamilyStreamEvent,
   type FamilyUsage,
@@ -62,17 +65,47 @@ function durationText(seconds: number) {
 }
 function usageText(usage?: FamilyUsage) {
   return usage?.source === "reported"
-    ? `输入 ${usage.inputTokens ?? 0} / 输出 ${usage.outputTokens ?? 0} token`
+    ? `输入 ${usage.inputTokens ?? "未知"} / 输出 ${
+        usage.outputTokens ?? "未知"
+      } token`
     : "用量未知";
+}
+function modelText(message: FamilyMessage) {
+  return message.model
+    ? `实际模型 ${message.model}`
+    : message.requestedModel
+    ? `请求模型 ${message.requestedModel}（未报告实际模型）`
+    : "";
+}
+function markdownExport(detail: FamilyChatDetail) {
+  return [
+    `# ${detail.chat.title || "新聊天"}`,
+    "",
+    "管理员可查看聊天记录与用量。以下为当前账户导出的聊天。",
+    "",
+    ...detail.messages.flatMap((message) => [
+      `## ${message.role === "user" ? "我" : "AI"}`,
+      "",
+      message.content,
+      "",
+      ...(message.role === "assistant"
+        ? [modelText(message), usageText(message.usage), ""]
+        : []),
+    ]),
+  ].join("\n");
 }
 
 // No raw HTML, embedded resources or automatic remote image requests.
 const MessageBody = memo(function MessageBody({
   message,
   userLabel = "你",
+  onCopy,
+  copied = false,
 }: {
   message: FamilyMessage;
   userLabel?: string;
+  onCopy?: (message: FamilyMessage) => void;
+  copied?: boolean;
 }) {
   return (
     <article
@@ -82,6 +115,9 @@ const MessageBody = memo(function MessageBody({
     >
       <div className={styles.messageMeta}>
         <strong>{message.role === "user" ? userLabel : "AI"}</strong>
+        {message.superseded ? (
+          <span className={styles.badge}>旧版本</span>
+        ) : null}
         <span>
           {message.status === "streaming"
             ? "正在回复…"
@@ -134,7 +170,20 @@ const MessageBody = memo(function MessageBody({
             ? "生成失败 · "
             : ""}
           {usageText(message.usage)}
+          {modelText(message) ? (
+            <span className={styles.modelMeta}>{modelText(message)}</span>
+          ) : null}
         </div>
+      ) : null}
+      {onCopy && message.content && message.status !== "streaming" ? (
+        <button
+          type="button"
+          className={`${styles.textButton} ${styles.copyButton}`}
+          onClick={() => onCopy(message)}
+          aria-label={`复制${message.role === "user" ? "提问" : "回复"}`}
+        >
+          {copied ? "已复制" : "复制"}
+        </button>
       ) : null}
     </article>
   );
@@ -192,6 +241,17 @@ export function FamilyApp() {
   const [chats, setChats] = useState<FamilyChat[]>([]);
   const [selectedChat, setSelectedChat] = useState<string | null>(null);
   const [messages, setMessages] = useState<FamilyMessage[]>([]);
+  const [activeChat, setActiveChat] = useState<FamilyChat | null>(null);
+  const [models, setModels] = useState<FamilyModel[]>([]);
+  const [selectedModel, setSelectedModel] = useState("");
+  const [modelLoading, setModelLoading] = useState(false);
+  const [modelError, setModelError] = useState("");
+  const [search, setSearch] = useState("");
+  const [renameTitle, setRenameTitle] = useState<string | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [copiedMessage, setCopiedMessage] = useState<string | null>(null);
+  const [editingMessage, setEditingMessage] = useState<string | null>(null);
+  const [draftBeforeEdit, setDraftBeforeEdit] = useState("");
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [archiveConfirm, setArchiveConfirm] = useState(false);
@@ -219,6 +279,13 @@ export function FamilyApp() {
   const bottom = useRef<HTMLDivElement>(null);
   const lastInteraction = useRef(Date.now());
   const registerRequested = useRef(false);
+  const identityVerified = useRef(false);
+  const defaultModel = useRef("");
+  const selectedChatRef = useRef<string | null>(null);
+  const composing = useRef(false);
+  const composerInput = useRef<HTMLTextAreaElement>(null);
+  const downloadUrls = useRef(new Set<string>());
+  const downloadTimers = useRef(new Set<number>());
 
   const request = useCallback(
     async <T,>(path: string, init: RequestInit = {}): Promise<T> => {
@@ -266,11 +333,30 @@ export function FamilyApp() {
     controllers.current.clear();
     streamController.current = null;
     currentUser.current = null;
+    identityVerified.current = false;
+    selectedChatRef.current = null;
+    defaultModel.current = "";
+    composing.current = false;
+    downloadTimers.current.forEach((timer) => window.clearTimeout(timer));
+    downloadTimers.current.clear();
+    downloadUrls.current.forEach((url) => URL.revokeObjectURL(url));
+    downloadUrls.current.clear();
     setUser(null);
     setExpiresAt("");
     setChats([]);
     setSelectedChat(null);
     setMessages([]);
+    setActiveChat(null);
+    setModels([]);
+    setSelectedModel("");
+    setModelLoading(false);
+    setModelError("");
+    setSearch("");
+    setRenameTitle(null);
+    setDetailLoading(false);
+    setCopiedMessage(null);
+    setEditingMessage(null);
+    setDraftBeforeEdit("");
     setDraft("");
     setSending(false);
     setArchiveConfirm(false);
@@ -289,6 +375,7 @@ export function FamilyApp() {
   const checkIdentity = useCallback(async () => {
     if (logoutIntent.current) return;
     const verification = ++checkSequence.current;
+    identityVerified.current = false;
     setChecking(true);
     try {
       const site = await request<FamilySiteStatus>("/api/family/status");
@@ -305,10 +392,12 @@ export function FamilyApp() {
         if (
           currentUser.current &&
           (currentUser.current.id !== me.user.id ||
+            currentUser.current.role !== me.user.role ||
             me.user.status !== "approved")
         )
           clearPrivate();
         currentUser.current = me.user;
+        identityVerified.current = me.user.status === "approved";
         setUser(me.user);
         setExpiresAt(me.sessionExpiresAt);
         setScreen((previous) =>
@@ -413,6 +502,11 @@ export function FamilyApp() {
       epoch.current += 1;
       controllers.current.forEach((controller) => controller.abort());
       controllers.current.clear();
+      identityVerified.current = false;
+      downloadTimers.current.forEach((timer) => window.clearTimeout(timer));
+      downloadTimers.current.clear();
+      downloadUrls.current.forEach((url) => URL.revokeObjectURL(url));
+      downloadUrls.current.clear();
       channel.current?.close();
       channel.current = null;
       window.removeEventListener("focus", verify);
@@ -426,13 +520,37 @@ export function FamilyApp() {
     const data = await request<{ chats: FamilyChat[] }>("/api/family/chats");
     setChats(data.chats);
   }, [request]);
+  const loadModels = useCallback(async () => {
+    const generation = epoch.current;
+    setModelLoading(true);
+    setModelError("");
+    try {
+      const catalog = await request<FamilyModelCatalog>("/api/family/models");
+      setModels(catalog.models);
+      defaultModel.current = catalog.defaultModel;
+      setSelectedModel((previous) => previous || catalog.defaultModel);
+    } catch (failure) {
+      if (!(failure instanceof StaleRequest)) setModelError(errorText(failure));
+    } finally {
+      if (generation === epoch.current) setModelLoading(false);
+    }
+  }, [request]);
 
   useEffect(() => {
-    if (!user || user.status !== "approved") return;
+    if (!user || user.status !== "approved" || status?.schemaReady === false)
+      return;
     void loadChats().catch((failure) => {
       if (!(failure instanceof StaleRequest)) setError(errorText(failure));
     });
-  }, [user?.id, user?.status, loadChats]);
+    void loadModels();
+  }, [
+    user?.id,
+    user?.status,
+    status?.schemaReady,
+    status?.schemaVersion,
+    loadChats,
+    loadModels,
+  ]);
 
   useEffect(() => {
     if (!user || user.status !== "approved") return;
@@ -477,6 +595,9 @@ export function FamilyApp() {
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: "end" });
   }, [messages]);
+  useEffect(() => {
+    if (editingMessage && !checking) composerInput.current?.focus();
+  }, [editingMessage, checking]);
 
   const run = async (operation: () => Promise<void>) => {
     const generation = epoch.current;
@@ -577,22 +698,134 @@ export function FamilyApp() {
 
   const selectChat = async (id: string) => {
     const version = ++listVersion.current;
+    const generation = epoch.current;
+    selectedChatRef.current = id;
     setSelectedChat(id);
+    setActiveChat(null);
+    setDetailLoading(true);
+    setRenameTitle(null);
+    setEditingMessage(null);
+    setDraftBeforeEdit("");
     setArchiveConfirm(false);
     setMessages([]);
     setDraft("");
     setSidebarOpen(false);
     setError("");
-    const data = await request<FamilyChatDetail>(
-      `/api/family/chats/${encodeURIComponent(id)}`,
-    );
-    if (version === listVersion.current) setMessages(data.messages);
+    try {
+      const data = await request<FamilyChatDetail>(
+        `/api/family/chats/${encodeURIComponent(id)}`,
+      );
+      if (version === listVersion.current) {
+        setMessages(data.messages);
+        setActiveChat(data.chat);
+        setSelectedModel(data.chat.model || defaultModel.current);
+      }
+    } finally {
+      if (generation === epoch.current && version === listVersion.current)
+        setDetailLoading(false);
+    }
   };
 
-  const sendMessage = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const acceptChat = (chat: FamilyChat) => {
+    setActiveChat(chat);
+    setChats((previous) =>
+      previous.map((item) => (item.id === chat.id ? chat : item)),
+    );
+  };
+  const changeModel = async (model: string) => {
+    if (!models.some((item) => item.id === model)) return;
+    if (selectedChat) {
+      const response = await request<{ chat: FamilyChat }>(
+        `/api/family/chats/${encodeURIComponent(selectedChat)}`,
+        { method: "PATCH", body: JSON.stringify({ model }) },
+      );
+      acceptChat(response.chat);
+      setSelectedModel(response.chat.model);
+    } else setSelectedModel(model);
+  };
+  const copyMessage = useCallback(async (message: FamilyMessage) => {
+    const generation = epoch.current;
+    if (
+      !identityVerified.current ||
+      !currentUser.current ||
+      message.status === "streaming"
+    )
+      return;
+    try {
+      if (!navigator.clipboard?.writeText)
+        throw new Error("此浏览器暂不支持复制，可长按选中文字。");
+      await navigator.clipboard.writeText(message.content);
+      if (generation === epoch.current && identityVerified.current)
+        setCopiedMessage(message.id);
+    } catch (failure) {
+      if (generation === epoch.current) setError(errorText(failure));
+    }
+  }, []);
+  const exportChat = async () => {
+    const id = selectedChat;
+    const generation = epoch.current;
+    const owner = currentUser.current?.id;
+    if (!id || !owner || !identityVerified.current) return;
+    const detail = await request<FamilyChatDetail>(
+      `/api/family/chats/${encodeURIComponent(id)}`,
+    );
+    if (
+      generation !== epoch.current ||
+      !identityVerified.current ||
+      currentUser.current?.id !== owner ||
+      selectedChatRef.current !== id
+    )
+      throw new StaleRequest();
+    const filename =
+      (detail.chat.title || "聊天")
+        .replace(/[<>:"/\\|?*\x00-\x1f]/g, "_")
+        .replace(/^\.+/, "")
+        .trim()
+        .slice(0, 70) || "聊天";
+    const url = URL.createObjectURL(
+      new Blob([markdownExport(detail)], {
+        type: "text/markdown;charset=utf-8",
+      }),
+    );
+    downloadUrls.current.add(url);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${filename}-${new Date().toISOString().slice(0, 10)}.md`;
+    document.body.appendChild(link);
+    try {
+      link.click();
+    } finally {
+      link.remove();
+    }
+    const timer = window.setTimeout(() => {
+      URL.revokeObjectURL(url);
+      downloadUrls.current.delete(url);
+      downloadTimers.current.delete(timer);
+    }, 1000);
+    downloadTimers.current.add(timer);
+    setNotice("已导出当前聊天。下载的文件由你自行保管。");
+  };
+
+  const generateMessage = async (
+    mode: "send" | "edit" | "retry" | "regenerate" = "send",
+    sourceMessageId?: string,
+  ) => {
     const content = draft.trim();
-    if (!content || sending || checking || streamController.current) return;
+    if (
+      ((mode === "send" || mode === "edit") && !content) ||
+      sending ||
+      checking ||
+      detailLoading ||
+      streamController.current ||
+      !identityVerified.current ||
+      (selectedChat !== null && !activeChat)
+    )
+      return;
+    if (!models.some((model) => model.id === selectedModel)) {
+      setError("请先选择一个可用模型。");
+      return;
+    }
+    if (mode !== "send" && (!selectedChat || !sourceMessageId)) return;
     const generation = epoch.current;
     const controller = new AbortController();
     controllers.current.add(controller);
@@ -606,15 +839,18 @@ export function FamilyApp() {
     let done = false;
     let rejectedBeforeStream = false;
     let serverStreamError = false;
+    let accepted = false;
     try {
       if (!chatId) {
         const data = await request<{ chat: FamilyChat }>("/api/family/chats", {
           method: "POST",
-          body: "{}",
+          body: JSON.stringify({ model: selectedModel }),
         });
         chatId = data.chat.id;
         setChats((previous) => [data.chat, ...previous]);
         setSelectedChat(chatId);
+        selectedChatRef.current = chatId;
+        setActiveChat(data.chat);
       }
       if (controller.signal.aborted)
         throw new DOMException("Aborted", "AbortError");
@@ -623,18 +859,36 @@ export function FamilyApp() {
       temporaryUserId = userId;
       assistantId = `local-assistant-${requestId}`;
       const createdAt = new Date().toISOString();
-      setMessages((previous) => [
-        ...previous,
-        { id: userId, role: "user", content, status: "complete", createdAt },
-        {
-          id: assistantId,
-          role: "assistant",
-          content: "",
-          status: "streaming",
-          createdAt,
-        },
-      ]);
-      setDraft("");
+      if (mode === "send")
+        setMessages((previous) => [
+          ...previous,
+          { id: userId, role: "user", content, status: "complete", createdAt },
+          {
+            id: assistantId,
+            role: "assistant",
+            content: "",
+            status: "streaming",
+            createdAt,
+          },
+        ]);
+      if (mode === "send" || mode === "edit") setDraft("");
+      const payload: FamilyMessageRequest =
+        mode === "send"
+          ? { content, requestId, model: selectedModel }
+          : mode === "edit"
+          ? {
+              content,
+              requestId,
+              model: selectedModel,
+              mode,
+              sourceMessageId: sourceMessageId!,
+            }
+          : {
+              requestId,
+              model: selectedModel,
+              mode,
+              sourceMessageId: sourceMessageId!,
+            };
       const response = await fetch(
         `/api/family/chats/${encodeURIComponent(chatId)}/messages`,
         {
@@ -646,7 +900,7 @@ export function FamilyApp() {
             "Content-Type": "application/json",
             Accept: "text/event-stream",
           },
-          body: JSON.stringify({ content, requestId }),
+          body: JSON.stringify(payload),
         },
       );
       if (generation !== epoch.current) throw new StaleRequest();
@@ -663,17 +917,24 @@ export function FamilyApp() {
       await consumeEvents(response, (streamEvent) => {
         if (generation !== epoch.current) return;
         if (streamEvent.type === "start") {
+          accepted = true;
           const previousAssistantId = assistantId;
           assistantId = streamEvent.assistantMessage.id;
-          setMessages((previous) =>
-            previous.map((message) =>
-              message.id === userId
-                ? streamEvent.userMessage
-                : message.id === previousAssistantId
-                ? streamEvent.assistantMessage
-                : message,
-            ),
-          );
+          const replaced = new Set([
+            userId,
+            previousAssistantId,
+            ...(streamEvent.replacedMessageIds ?? []),
+          ]);
+          setMessages((previous) => [
+            ...previous.filter((message) => !replaced.has(message.id)),
+            streamEvent.userMessage,
+            streamEvent.assistantMessage,
+          ]);
+          if (mode === "edit") {
+            setEditingMessage(null);
+            setDraft(draftBeforeEdit);
+            setDraftBeforeEdit("");
+          }
         } else if (streamEvent.type === "delta") {
           setMessages((previous) =>
             previous.map((message) =>
@@ -710,7 +971,7 @@ export function FamilyApp() {
               message.id !== temporaryUserId && message.id !== assistantId,
           ),
         );
-        setDraft(content);
+        if (mode === "send" || mode === "edit") setDraft(content);
       } else if (!done) {
         setMessages((previous) =>
           previous.map((message) =>
@@ -737,6 +998,29 @@ export function FamilyApp() {
       controllers.current.delete(controller);
       if (streamController.current === controller)
         streamController.current = null;
+      if (
+        generation === epoch.current &&
+        accepted &&
+        mode !== "send" &&
+        chatId
+      ) {
+        try {
+          const detail = await request<FamilyChatDetail>(
+            `/api/family/chats/${encodeURIComponent(chatId)}`,
+          );
+          if (selectedChatRef.current === chatId) {
+            setMessages(detail.messages);
+            acceptChat(detail.chat);
+            setSelectedModel(detail.chat.model || defaultModel.current);
+          }
+        } catch (failure) {
+          if (
+            generation === epoch.current &&
+            !(failure instanceof StaleRequest)
+          )
+            setNotice("请刷新会话查看服务器保存的最新版本。");
+        }
+      }
       if (generation === epoch.current) setSending(false);
     }
   };
@@ -772,6 +1056,21 @@ export function FamilyApp() {
   const siteNotice = status?.notice || FAMILY_NOTICE;
   const inputDisabled = working || logoutFailed || checking;
   const approved = user?.status === "approved";
+  const visibleChats = chats.filter((chat) =>
+    chat.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
+  );
+  const chosenModel = models.find((model) => model.id === selectedModel);
+  const lastUserMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === "user" && !message.superseded);
+  const lastAssistantMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === "assistant" && !message.superseded);
+  const turnLocked =
+    sending ||
+    working ||
+    detailLoading ||
+    lastAssistantMessage?.status === "streaming";
 
   // Unmount private DOM during verification, including keyboard/reader targets.
   // Account-scoped state remains in memory until identity is confirmed or reset.
@@ -808,7 +1107,14 @@ export function FamilyApp() {
               ? "首次使用，请由网站管理员完成初始化。"
               : "一个只对受邀家人开放的聊天空间。"}
           </p>
-          <div className={styles.privacyNotice}>{siteNotice}</div>
+          <div className={styles.privacyNotice}>
+            {screen === "login"
+              ? siteNotice.replace(
+                  "管理员可查看账号、聊天内容、模型回复、用量和前台活跃时长估算。",
+                  "",
+                )
+              : siteNotice}
+          </div>
           {error ? (
             <p className={styles.error} role="alert">
               {error}
@@ -883,18 +1189,23 @@ export function FamilyApp() {
                 </label>
               ) : null}
               {register ? (
-                <label>
-                  邀请口令
-                  <input
-                    value={inviteToken}
-                    onChange={(event) => setInviteToken(event.target.value)}
-                    autoComplete="off"
-                    required
-                    maxLength={512}
-                    disabled={inputDisabled}
-                    spellCheck={false}
-                  />
-                </label>
+                <>
+                  <label>
+                    邀请口令
+                    <input
+                      value={inviteToken}
+                      onChange={(event) => setInviteToken(event.target.value)}
+                      autoComplete="off"
+                      required
+                      maxLength={512}
+                      disabled={inputDisabled}
+                      spellCheck={false}
+                    />
+                  </label>
+                  <small>
+                    请向家人管理员索取邀请链接。每个邀请仅供一人注册，注册后仍需管理员批准。
+                  </small>
+                </>
               ) : null}
               {setup || register ? (
                 <label>
@@ -979,6 +1290,48 @@ export function FamilyApp() {
     );
   }
 
+  if (status?.schemaReady === false)
+    return (
+      <main className={styles.shell}>
+        <section className={styles.authCard}>
+          <h1>{user.role === "admin" ? "更新聊天功能" : "服务正在升级"}</h1>
+          <p className={styles.subtitle}>
+            {user.role === "admin"
+              ? "更新后即可使用模型选择与聊天编辑。账号和已有聊天会保留。"
+              : "请等待管理员更新聊天功能，稍后再来。"}
+          </p>
+          {error ? (
+            <p className={styles.error} role="alert">
+              {error}
+            </p>
+          ) : null}
+          {user.role === "admin" ? (
+            <button
+              disabled={working}
+              onClick={() =>
+                void run(async () => {
+                  await request("/api/family/admin/migrate", {
+                    method: "POST",
+                    body: "{}",
+                  });
+                  await checkIdentity();
+                })
+              }
+            >
+              {working ? "正在更新…" : "更新聊天功能"}
+            </button>
+          ) : (
+            <button disabled={checking} onClick={() => void checkIdentity()}>
+              重新检查
+            </button>
+          )}
+          <button className={styles.textButton} onClick={() => void logout()}>
+            退出登录
+          </button>
+        </section>
+      </main>
+    );
+
   return (
     <main className={styles.shell}>
       <div className={styles.app}>
@@ -1003,6 +1356,12 @@ export function FamilyApp() {
               ++listVersion.current;
               setScreen("chat");
               setSelectedChat(null);
+              selectedChatRef.current = null;
+              setActiveChat(null);
+              setSelectedModel(defaultModel.current);
+              setRenameTitle(null);
+              setEditingMessage(null);
+              setDraftBeforeEdit("");
               setArchiveConfirm(false);
               setMessages([]);
               setDraft("");
@@ -1012,11 +1371,30 @@ export function FamilyApp() {
           >
             ＋ 新聊天
           </button>
+          <label className={styles.searchField}>
+            <span className={styles.srOnly}>搜索聊天</span>
+            <input
+              type="search"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="搜索聊天标题"
+            />
+          </label>
           <nav className={styles.chatList} aria-label="我的聊天">
-            {chats.length === 0 ? (
-              <p className={styles.muted}>聊天会保存到你的账户。</p>
+            {visibleChats.length === 0 ? (
+              <div className={styles.muted}>
+                <p>{search ? "没有匹配的聊天。" : "聊天会保存到你的账户。"}</p>
+                {search ? (
+                  <button
+                    className={styles.textButton}
+                    onClick={() => setSearch("")}
+                  >
+                    清空搜索
+                  </button>
+                ) : null}
+              </div>
             ) : (
-              chats.map((chat) => (
+              visibleChats.map((chat) => (
                 <button
                   key={chat.id}
                   className={
@@ -1085,6 +1463,14 @@ export function FamilyApp() {
               </h1>
               <p>管理员可查看聊天记录与用量</p>
             </div>
+            {user.role === "admin" && screen !== "admin" ? (
+              <button
+                disabled={sending || working}
+                onClick={() => void run(openAdmin)}
+              >
+                邀请家人
+              </button>
+            ) : null}
             {screen === "admin" ? (
               <button
                 className={styles.secondary}
@@ -1096,25 +1482,108 @@ export function FamilyApp() {
               >
                 返回聊天
               </button>
-            ) : selectedChat ? (
-              <>
+            ) : null}
+          </header>
+          {screen === "chat" ? (
+            <div className={styles.chatToolbar}>
+              <label className={styles.modelPicker}>
+                <span>模型</span>
+                <select
+                  aria-label="选择模型"
+                  value={selectedModel}
+                  disabled={
+                    sending ||
+                    working ||
+                    detailLoading ||
+                    modelLoading ||
+                    models.length === 0
+                  }
+                  onChange={(event) =>
+                    void run(() => changeModel(event.target.value))
+                  }
+                >
+                  {!chosenModel ? (
+                    <option value={selectedModel}>
+                      {modelLoading
+                        ? "正在加载模型…"
+                        : selectedModel
+                        ? `${selectedModel}（不可用，请更换）`
+                        : "请选择模型"}
+                    </option>
+                  ) : null}
+                  {models.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.name}
+                      {model.reasoning ? " · 推理" : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {chosenModel ? (
+                <small className={styles.modelDescription}>
+                  {chosenModel.description}
+                </small>
+              ) : null}
+              {modelError ? (
+                <div className={styles.modelError} role="alert">
+                  {modelError}
+                  <button
+                    className={styles.textButton}
+                    disabled={modelLoading}
+                    onClick={() => void loadModels()}
+                  >
+                    重新加载模型
+                  </button>
+                </div>
+              ) : null}
+              <div className={styles.chatTools}>
                 <button
                   className={styles.secondary}
-                  disabled={sending || working}
-                  onClick={() => void run(() => selectChat(selectedChat))}
+                  disabled={turnLocked || !activeChat}
+                  onClick={() => setRenameTitle(activeChat?.title ?? "")}
+                >
+                  重命名
+                </button>
+                <button
+                  className={styles.secondary}
+                  disabled={turnLocked || !activeChat}
+                  onClick={() => void run(exportChat)}
+                >
+                  导出 Markdown
+                </button>
+                <button
+                  className={styles.secondary}
+                  disabled={turnLocked}
+                  onClick={() =>
+                    void run(async () => {
+                      await loadChats();
+                      if (selectedChat) {
+                        const detail = await request<FamilyChatDetail>(
+                          `/api/family/chats/${encodeURIComponent(
+                            selectedChat,
+                          )}`,
+                        );
+                        setMessages(detail.messages);
+                        acceptChat(detail.chat);
+                        setSelectedModel(
+                          detail.chat.model || defaultModel.current,
+                        );
+                      }
+                    })
+                  }
                 >
                   刷新
                 </button>
                 <button
                   className={styles.secondary}
-                  disabled={sending || working}
+                  disabled={turnLocked || !activeChat}
                   onClick={() => setArchiveConfirm(true)}
                 >
                   归档对话
                 </button>
-              </>
-            ) : null}
-          </header>
+              </div>
+            </div>
+          ) : null}
           {error ? (
             <div className={styles.bannerError} role="alert">
               {error}
@@ -1124,6 +1593,50 @@ export function FamilyApp() {
             <div className={styles.bannerSuccess} role="status">
               {notice}
             </div>
+          ) : null}
+          {screen === "chat" && renameTitle !== null && activeChat ? (
+            <form
+              className={styles.editPanel}
+              onSubmit={(event) => {
+                event.preventDefault();
+                void run(async () => {
+                  const response = await request<{ chat: FamilyChat }>(
+                    `/api/family/chats/${encodeURIComponent(activeChat.id)}`,
+                    {
+                      method: "PATCH",
+                      body: JSON.stringify({ title: renameTitle.trim() }),
+                    },
+                  );
+                  acceptChat(response.chat);
+                  setRenameTitle(null);
+                });
+              }}
+            >
+              <label>
+                聊天名称
+                <input
+                  autoFocus
+                  value={renameTitle}
+                  onChange={(event) => setRenameTitle(event.target.value)}
+                  maxLength={80}
+                  required
+                  disabled={working}
+                />
+              </label>
+              <div>
+                <button disabled={working || !renameTitle.trim()}>
+                  保存名称
+                </button>
+                <button
+                  className={styles.secondary}
+                  type="button"
+                  disabled={working}
+                  onClick={() => setRenameTitle(null)}
+                >
+                  取消
+                </button>
+              </div>
+            </form>
           ) : null}
           {screen === "chat" && selectedChat && archiveConfirm ? (
             <div className={styles.archivePrompt}>
@@ -1139,6 +1652,10 @@ export function FamilyApp() {
                       );
                       ++listVersion.current;
                       setSelectedChat(null);
+                      selectedChatRef.current = null;
+                      setActiveChat(null);
+                      setEditingMessage(null);
+                      setDraftBeforeEdit("");
                       setMessages([]);
                       setDraft("");
                       setArchiveConfirm(false);
@@ -1161,6 +1678,12 @@ export function FamilyApp() {
           ) : null}
           {screen === "admin" ? (
             <div className={styles.adminContent}>
+              <section className={styles.inviteGuide}>
+                <h2>邀请家人</h2>
+                <p>
+                  点击“生成单次邀请”，再把链接发给一位家人。每个邀请仅限一人注册，注册后你还需要在下方批准加入。
+                </p>
+              </section>
               <div className={styles.adminToolbar}>
                 <p>仅统计前台可见且最近有操作的活跃时长，属于估算。</p>
                 <div>
@@ -1212,8 +1735,14 @@ export function FamilyApp() {
                   <button
                     onClick={() =>
                       void run(async () => {
+                        const generation = epoch.current;
+                        if (!identityVerified.current) throw new StaleRequest();
                         await navigator.clipboard.writeText(newInvite.url);
-                        setCopied(true);
+                        if (
+                          generation === epoch.current &&
+                          identityVerified.current
+                        )
+                          setCopied(true);
                       })
                     }
                   >
@@ -1360,10 +1889,65 @@ export function FamilyApp() {
                 aria-label="聊天记录"
                 aria-busy={sending}
               >
-                {messages.length ? (
-                  messages.map((message) => (
-                    <MessageBody key={message.id} message={message} />
-                  ))
+                {detailLoading ? (
+                  <p className={styles.muted} role="status">
+                    正在加载聊天…
+                  </p>
+                ) : selectedChat && !activeChat ? (
+                  <div className={styles.welcome}>
+                    <h2>聊天暂时没有加载成功</h2>
+                    <p>请点上方“刷新”重试。</p>
+                  </div>
+                ) : messages.length ? (
+                  messages
+                    .filter((message) => !message.superseded)
+                    .map((message) => (
+                      <div key={message.id}>
+                        <MessageBody
+                          message={message}
+                          onCopy={copyMessage}
+                          copied={copiedMessage === message.id}
+                        />
+                        {message.id === lastUserMessage?.id ? (
+                          <div className={styles.turnActions}>
+                            <button
+                              className={styles.textButton}
+                              disabled={turnLocked || !!editingMessage}
+                              onClick={() => {
+                                setDraftBeforeEdit(draft);
+                                setDraft(message.content);
+                                setEditingMessage(message.id);
+                              }}
+                            >
+                              编辑上一条提问
+                            </button>
+                          </div>
+                        ) : null}
+                        {message.id === lastAssistantMessage?.id &&
+                        message.status !== "streaming" ? (
+                          <div className={styles.turnActions}>
+                            <button
+                              className={styles.textButton}
+                              disabled={
+                                turnLocked || !!editingMessage || !chosenModel
+                              }
+                              onClick={() =>
+                                void generateMessage(
+                                  message.status === "complete"
+                                    ? "regenerate"
+                                    : "retry",
+                                  message.id,
+                                )
+                              }
+                            >
+                              {message.status === "complete"
+                                ? "重新生成"
+                                : "重试回复"}
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    ))
                 ) : (
                   <div className={styles.welcome}>
                     <span className={styles.welcomeIcon}>聊</span>
@@ -1378,25 +1962,58 @@ export function FamilyApp() {
               </div>
               <form
                 className={styles.composer}
-                onSubmit={(event) => void sendMessage(event)}
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void generateMessage(
+                    editingMessage ? "edit" : "send",
+                    editingMessage ?? undefined,
+                  );
+                }}
               >
+                {editingMessage ? (
+                  <div className={styles.editingNotice}>
+                    <strong>编辑上一条提问</strong>
+                    <span>将重新回复这一轮，旧版本仍由管理员保留。</span>
+                    <button
+                      type="button"
+                      className={styles.textButton}
+                      disabled={sending}
+                      onClick={() => {
+                        setDraft(draftBeforeEdit);
+                        setDraftBeforeEdit("");
+                        setEditingMessage(null);
+                      }}
+                    >
+                      取消编辑
+                    </button>
+                  </div>
+                ) : null}
                 <label className={styles.srOnly} htmlFor="family-message">
                   发送消息
                 </label>
                 <textarea
                   id="family-message"
+                  ref={composerInput}
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
-                  placeholder="输入消息…"
+                  placeholder={editingMessage ? "修改上一条提问…" : "输入消息…"}
                   rows={3}
                   maxLength={12000}
-                  disabled={sending || checking || working}
+                  disabled={sending || checking || working || detailLoading}
+                  enterKeyHint="send"
+                  onCompositionStart={() => {
+                    composing.current = true;
+                  }}
+                  onCompositionEnd={() => {
+                    composing.current = false;
+                  }}
                   onKeyDown={(event) => {
                     if (
                       event.key === "Enter" &&
                       !event.shiftKey &&
                       !event.nativeEvent.isComposing &&
-                      window.matchMedia("(min-width: 769px)").matches
+                      !composing.current &&
+                      event.keyCode !== 229
                     ) {
                       event.preventDefault();
                       event.currentTarget.form?.requestSubmit();
@@ -1404,7 +2021,11 @@ export function FamilyApp() {
                   }}
                 />
                 <div className={styles.composerActions}>
-                  <small>AI 回答可能有误 · 管理员可查看记录</small>
+                  <small>
+                    Enter 发送 · Shift+Enter 换行
+                    <br />
+                    AI 回答可能有误 · 管理员可查看记录
+                  </small>
                   {sending ? (
                     <button
                       type="button"
@@ -1416,9 +2037,16 @@ export function FamilyApp() {
                   ) : (
                     <button
                       type="submit"
-                      disabled={!draft.trim() || checking || working}
+                      disabled={
+                        !draft.trim() ||
+                        checking ||
+                        working ||
+                        detailLoading ||
+                        (selectedChat !== null && !activeChat) ||
+                        !chosenModel
+                      }
                     >
-                      发送 ↑
+                      {editingMessage ? "保存并重新回复" : "发送 ↑"}
                     </button>
                   )}
                 </div>

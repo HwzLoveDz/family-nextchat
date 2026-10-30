@@ -19,6 +19,9 @@ export interface FamilySiteStatus {
   needsSetup: boolean;
   dbConfigured: boolean;
   notice: string;
+  schemaReady?: boolean;
+  schemaVersion?: number;
+  modelConfigured?: boolean;
 }
 export interface FamilyMe {
   user: FamilyUser;
@@ -27,6 +30,7 @@ export interface FamilyMe {
 export interface FamilyChat {
   id: string;
   title: string;
+  model: string;
   archived: boolean;
   createdAt: string;
   updatedAt: string;
@@ -43,7 +47,28 @@ export interface FamilyMessage {
   status: FamilyMessageStatus;
   createdAt: string;
   usage?: FamilyUsage;
+  requestedModel?: string | null;
+  model?: string | null;
+  superseded?: boolean;
 }
+export interface FamilyModel {
+  id: string;
+  name: string;
+  description: string;
+  reasoning: boolean;
+}
+export interface FamilyModelCatalog {
+  models: FamilyModel[];
+  defaultModel: string;
+}
+export type FamilyMessageRequest = {
+  requestId: string;
+  model?: string;
+} & (
+  | { mode?: "send"; content: string; sourceMessageId?: never }
+  | { mode: "edit"; content: string; sourceMessageId: string }
+  | { mode: "retry" | "regenerate"; content?: never; sourceMessageId: string }
+);
 export interface FamilyChatDetail {
   chat: FamilyChat;
   messages: FamilyMessage[];
@@ -61,6 +86,7 @@ export type FamilyStreamEvent =
       type: "start";
       userMessage: FamilyMessage;
       assistantMessage: FamilyMessage;
+      replacedMessageIds?: string[];
     }
   | { type: "delta"; text: string }
   | { type: "done"; message: FamilyMessage; usage: FamilyUsage }

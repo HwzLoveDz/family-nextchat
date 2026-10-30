@@ -17,7 +17,13 @@ import {
   generate,
   listChats,
   newChat,
+  updateChat,
 } from "@/app/family/server/chats";
+import { modelCatalog } from "@/app/family/server/models";
+import {
+  ensureFamilyApplicationUpgrade,
+  requireFamilyApplicationUpgrade,
+} from "@/app/family/server/upgrades";
 import {
   assertSameOrigin,
   bodyJson,
@@ -75,6 +81,20 @@ async function handle(
           sessionExpiresAt: session.sessionExpiresAt,
         }),
       );
+    if (method === "POST" && joined === "admin/migrate") {
+      await rateLimit(request, "admin:migrate", 5, 60, userId);
+      await ensureFamilyApplicationUpgrade();
+      await audit(userId, "schema.upgrade");
+      return finish(json({ ok: true, schemaVersion: 2 }));
+    }
+    if (
+      path[0] === "chats" ||
+      joined === "models" ||
+      (path[0] === "admin" && path.includes("chats"))
+    )
+      await requireFamilyApplicationUpgrade();
+    if (method === "GET" && joined === "models")
+      return finish(json(modelCatalog()));
     if (method === "POST")
       await rateLimit(
         request,
@@ -92,6 +112,18 @@ async function handle(
         );
     }
     if (path[0] === "chats" && path.length === 2) {
+      if (method === "PATCH") {
+        await rateLimit(request, "chat:update", 30, 60, userId);
+        return finish(
+          json({
+            chat: await updateChat(
+              path[1],
+              userId,
+              await bodyJson(request, 2048),
+            ),
+          }),
+        );
+      }
       if (method === "GET")
         return finish(json(await chatDetail(path[1], userId)));
       if (method === "DELETE")

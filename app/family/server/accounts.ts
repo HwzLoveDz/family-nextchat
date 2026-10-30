@@ -7,6 +7,7 @@ import { digest, FamilyApiError, secureEqual, text } from "./errors";
 import { FAMILY_NOTICE, type FamilySiteStatus } from "../types";
 import { configuredOrigin } from "./errors";
 import { ensureFamilySchema } from "./schema";
+import { applicationUpgradeStatus } from "./upgrades";
 
 export async function siteStatus(): Promise<FamilySiteStatus> {
   const result: FamilySiteStatus = {
@@ -19,6 +20,9 @@ export async function siteStatus(): Promise<FamilySiteStatus> {
     ready: false,
     needsSetup: false,
     dbConfigured: !!process.env.DATABASE_URL,
+    modelConfigured: !!process.env.OPENAI_API_KEY,
+    schemaReady: false,
+    schemaVersion: 0,
     notice: FAMILY_NOTICE,
   };
   if (!result.dbConfigured)
@@ -37,6 +41,7 @@ export async function siteStatus(): Promise<FamilySiteStatus> {
     result.ready = !!setup.rows[0].initialized;
     if (!process.env.OPENAI_API_KEY)
       result.notice += " 模型 API 尚未配置，当前不能发送消息。";
+    Object.assign(result, await applicationUpgradeStatus());
     return result;
   } catch {
     return {

@@ -6,12 +6,14 @@ import { getPool, transaction } from "./db";
 import { FamilyApiError, digest, text } from "./errors";
 import { PRIVATE_API_HEADERS } from "../enabled";
 import { OpenAIStreamDecoder } from "./openai-stream";
+import { allowedModel, completionBody, modelCatalog } from "./models";
 import type {
   FamilyChat,
   FamilyChatDetail,
   FamilyMessage,
   FamilyStreamEvent,
   FamilyUsage,
+  FamilyModel,
 } from "../types";
 
 export function validId(value: string) {
@@ -27,6 +29,7 @@ function chatJson(row: Record<string, any>): FamilyChat {
   return {
     id: row.id,
     title: row.title,
+    model: row.model || modelCatalog().defaultModel,
     archived: !!row.deleted_at,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
@@ -52,6 +55,9 @@ function messageJson(row: Record<string, any>): FamilyMessage {
     content: row.content,
     status: row.status,
     createdAt: row.created_at.toISOString(),
+    requestedModel: row.requested_model ?? null,
+    model: row.actual_model ?? null,
+    superseded: !!row.superseded_at,
     ...(row.role === "assistant" ? { usage: usageJson(row) } : {}),
   };
 }
@@ -68,11 +74,61 @@ export async function listChats(userId: string, includeArchived = false) {
 export async function newChat(userId: string, body: Record<string, unknown>) {
   const title =
     body.title === undefined ? "新对话" : text(body.title, 80, "标题");
+  if (Object.keys(body).some((key) => !["title", "model"].includes(key)))
+    throw new FamilyApiError(400, "新对话参数无效。");
+  const model = allowedModel(
+    body.model === undefined ? modelCatalog().defaultModel : body.model,
+  );
   const result = await getPool().query(
-    "INSERT INTO family_chat(id,user_id,title) VALUES($1,$2,$3) RETURNING *",
-    [randomUUID(), userId, title],
+    "INSERT INTO family_chat(id,user_id,title,model) VALUES($1,$2,$3,$4) RETURNING *",
+    [randomUUID(), userId, title, model.id],
   );
   return chatJson(result.rows[0]);
+}
+export async function updateChat(
+  chatId: string,
+  userId: string,
+  body: Record<string, unknown>,
+) {
+  validId(chatId);
+  if (
+    !Object.keys(body).length ||
+    Object.keys(body).some((key) => !["title", "model"].includes(key))
+  )
+    throw new FamilyApiError(400, "请提供对话名称或列表中的模型。");
+  return transaction(async (client) => {
+    const owner = await client.query(
+      "SELECT * FROM family_chat WHERE id=$1 AND user_id=$2 AND deleted_at IS NULL FOR UPDATE",
+      [chatId, userId],
+    );
+    if (!owner.rowCount) throw new FamilyApiError(404, "对话不存在。");
+    const title =
+      body.title === undefined
+        ? owner.rows[0].title
+        : text(body.title, 80, "标题");
+    const model =
+      body.model === undefined
+        ? owner.rows[0].model
+        : allowedModel(body.model).id;
+    if (
+      (
+        await client.query(
+          "SELECT 1 FROM family_generation WHERE chat_id=$1 AND state='running' AND started_at>now()-interval '90 seconds'",
+          [chatId],
+        )
+      ).rowCount
+    )
+      throw new FamilyApiError(
+        409,
+        "请等待当前回复结束后再修改对话。",
+        "GENERATION_BUSY",
+      );
+    const result = await client.query(
+      "UPDATE family_chat SET title=$1,model=$2,updated_at=now() WHERE id=$3 AND user_id=$4 AND deleted_at IS NULL RETURNING *",
+      [title, model, chatId, userId],
+    );
+    return chatJson(result.rows[0]);
+  });
 }
 export async function chatDetail(
   chatId: string,
@@ -88,7 +144,9 @@ export async function chatDetail(
   );
   if (!result.rows[0]) throw new FamilyApiError(404, "对话不存在。");
   const messages = await getPool().query(
-    "SELECT m.*,g.input_tokens,g.output_tokens,g.usage_source FROM family_message m JOIN family_generation g ON g.id=m.generation_id WHERE m.chat_id=$1 ORDER BY m.position LIMIT 400",
+    "SELECT m.*,g.model AS requested_model,g.actual_model,g.superseded_at,g.input_tokens,g.output_tokens,g.usage_source FROM family_message m JOIN family_generation g ON g.id=m.generation_id WHERE m.chat_id=$1" +
+      (!userId && includeArchived ? "" : " AND g.superseded_at IS NULL") +
+      " ORDER BY m.position LIMIT 400",
     [chatId],
   );
   return {
@@ -129,24 +187,92 @@ interface GenerationStart {
   history: { role: "user" | "assistant"; content: string }[];
   replay?: boolean;
   usage?: FamilyUsage;
+  model: FamilyModel;
+  replacedMessageIds?: string[];
+}
+type GenerationMode = "send" | "edit" | "retry" | "regenerate";
+interface GenerationIntent {
+  mode: GenerationMode;
+  content: string | null;
+  sourceMessageId: string | null;
+  requestedModel?: string;
+}
+function generationIntent(body: Record<string, unknown>): GenerationIntent {
+  const mode = body.mode === undefined ? "send" : body.mode;
+  if (
+    typeof mode !== "string" ||
+    !["send", "edit", "retry", "regenerate"].includes(mode)
+  )
+    throw new FamilyApiError(400, "消息操作无效。", "INVALID_MESSAGE_MODE");
+  if (
+    body.model !== undefined &&
+    (typeof body.model !== "string" || !body.model || body.model.length > 100)
+  )
+    throw new FamilyApiError(400, "请选择列表中的模型。", "MODEL_NOT_ALLOWED");
+  if (
+    Object.keys(body).some(
+      (key) =>
+        !["content", "requestId", "model", "mode", "sourceMessageId"].includes(
+          key,
+        ),
+    )
+  )
+    throw new FamilyApiError(
+      400,
+      "消息参数无效。",
+      "INVALID_MESSAGE_PARAMETERS",
+    );
+  if (mode === "send" && body.sourceMessageId !== undefined)
+    throw new FamilyApiError(
+      400,
+      "新消息不能指定来源。",
+      "INVALID_MESSAGE_SOURCE",
+    );
+  let sourceMessageId: string | null = null;
+  if (mode !== "send")
+    sourceMessageId = validId(text(body.sourceMessageId, 100, "原消息编号"));
+  if ((mode === "retry" || mode === "regenerate") && body.content !== undefined)
+    throw new FamilyApiError(
+      400,
+      "此操作由服务器读取原问题。",
+      "INVALID_MESSAGE_PARAMETERS",
+    );
+  return {
+    mode: mode as GenerationMode,
+    content:
+      mode === "send" || mode === "edit"
+        ? text(body.content, 12_000, "消息")
+        : null,
+    sourceMessageId,
+    requestedModel: body.model as string | undefined,
+  };
+}
+function intentHash(chatId: string, intent: GenerationIntent, model: string) {
+  return digest(
+    JSON.stringify({
+      chatId,
+      content: intent.content,
+      model,
+      mode: intent.mode,
+      sourceMessageId: intent.sourceMessageId,
+    }),
+  );
 }
 async function prepare(
   client: PoolClient,
   userId: string,
   chatId: string,
-  content: string,
+  intent: GenerationIntent,
   requestId: string,
-  model: string,
 ): Promise<GenerationStart> {
   await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
-    `family-generation:${userId}`,
+    "family-generation:" + userId,
   ]);
   const owner = await client.query(
-    "SELECT id FROM family_chat WHERE id=$1 AND user_id=$2 AND deleted_at IS NULL FOR UPDATE",
+    "SELECT * FROM family_chat WHERE id=$1 AND user_id=$2 AND deleted_at IS NULL FOR UPDATE",
     [chatId, userId],
   );
   if (!owner.rowCount) throw new FamilyApiError(404, "对话不存在。");
-  const requestHash = digest(JSON.stringify({ chatId, content }));
   const existing = (
     await client.query(
       "SELECT * FROM family_generation WHERE user_id=$1 AND request_id=$2",
@@ -154,10 +280,21 @@ async function prepare(
     )
   ).rows[0];
   if (existing) {
-    if (existing.request_hash !== requestHash)
+    const requested = intent.requestedModel ?? existing.model;
+    const expected = intentHash(chatId, intent, requested);
+    const legacy =
+      intent.mode === "send" &&
+      !intent.sourceMessageId &&
+      requested === existing.model &&
+      existing.request_hash ===
+        digest(JSON.stringify({ chatId, content: intent.content }));
+    if (
+      existing.chat_id !== chatId ||
+      (existing.request_hash !== expected && !legacy)
+    )
       throw new FamilyApiError(
         409,
-        "请求编号不能用于不同内容。",
+        "请求编号不能用于不同内容、模型或操作。",
         "REQUEST_CONFLICT",
       );
     if (existing.state !== "complete")
@@ -166,26 +303,46 @@ async function prepare(
         "此请求已在处理中或已经中断，请刷新对话查看。",
         "REQUEST_EXISTS",
       );
+    if (existing.superseded_at)
+      throw new FamilyApiError(
+        409,
+        "这条回复已有新版本，请刷新对话查看。",
+        "REQUEST_SUPERSEDED",
+      );
     const messages = (
       await client.query(
-        "SELECT * FROM family_message WHERE generation_id=$1 ORDER BY position",
+        "SELECT m.*,g.model AS requested_model,g.actual_model,g.superseded_at,g.input_tokens,g.output_tokens,g.usage_source FROM family_message m JOIN family_generation g ON g.id=m.generation_id WHERE generation_id=$1 ORDER BY position",
         [existing.id],
       )
     ).rows;
+    const replaced = existing.source_generation_id
+      ? (
+          await client.query(
+            "SELECT id FROM family_message WHERE generation_id=$1 ORDER BY position",
+            [existing.source_generation_id],
+          )
+        ).rows.map((row) => row.id)
+      : undefined;
     return {
       id: existing.id,
       assistantId: messages[1].id,
       userMessage: messageJson(messages[0]),
-      assistantMessage: {
-        ...messageJson(messages[1]),
-        usage: usageJson(existing),
-      },
+      assistantMessage: messageJson(messages[1]),
       history: [],
       replay: true,
       usage: usageJson(existing),
+      model: {
+        id: existing.model,
+        name: existing.model,
+        description: "",
+        reasoning: false,
+      },
+      replacedMessageIds: replaced,
     };
   }
-  // Recover orphaned streams on the next request, without a watcher or cron job.
+  const model = allowedModel(
+    intent.requestedModel ?? owner.rows[0].model ?? modelCatalog().defaultModel,
+  );
   const stale = await client.query(
     "UPDATE family_generation SET state='partial',finished_at=now() WHERE user_id=$1 AND state='running' AND started_at<now()-interval '90 seconds' RETURNING id",
     [userId],
@@ -208,6 +365,55 @@ async function prepare(
       "当前已有回复正在生成，请稍后再试。",
       "GENERATION_BUSY",
     );
+  let content = intent.content!;
+  let sourceGeneration: string | null = null;
+  let replacedMessageIds: string[] | undefined;
+  if (intent.mode !== "send") {
+    const source = (
+      await client.query(
+        "SELECT g.id,g.state,m.role FROM family_generation g JOIN family_message m ON m.generation_id=g.id WHERE g.chat_id=$1 AND g.user_id=$2 AND m.id=$3",
+        [chatId, userId, intent.sourceMessageId],
+      )
+    ).rows[0];
+    if (!source)
+      throw new FamilyApiError(404, "原消息不存在。", "MESSAGE_NOT_FOUND");
+    const last = (
+      await client.query(
+        "SELECT g.id,g.state,u.id AS user_message_id,u.content AS user_content,a.id AS assistant_message_id FROM family_generation g JOIN family_message u ON u.generation_id=g.id AND u.role='user' JOIN family_message a ON a.generation_id=g.id AND a.role='assistant' WHERE g.chat_id=$1 AND g.superseded_at IS NULL ORDER BY u.position DESC LIMIT 1 FOR UPDATE OF g",
+        [chatId],
+      )
+    ).rows[0];
+    if (!last || last.id !== source.id)
+      throw new FamilyApiError(
+        409,
+        "目前仅可编辑、重试或重新生成最后一轮。",
+        "LAST_TURN_ONLY",
+      );
+    if (
+      (intent.mode === "edit" && source.role !== "user") ||
+      (intent.mode !== "edit" && source.role !== "assistant")
+    )
+      throw new FamilyApiError(
+        400,
+        "原消息类型与操作不匹配。",
+        "INVALID_MESSAGE_SOURCE",
+      );
+    if (intent.mode === "regenerate" && source.state !== "complete")
+      throw new FamilyApiError(
+        409,
+        "中断的回复请使用重试。",
+        "REGENERATE_REQUIRES_COMPLETE",
+      );
+    if (intent.mode === "retry" && !["partial", "error"].includes(source.state))
+      throw new FamilyApiError(
+        409,
+        "只有中断或失败的回复可以重试。",
+        "RETRY_REQUIRES_FAILURE",
+      );
+    sourceGeneration = last.id;
+    replacedMessageIds = [last.user_message_id, last.assistant_message_id];
+    if (intent.mode !== "edit") content = last.user_content;
+  }
   const count = await client.query(
     "SELECT count(*)::int AS count FROM family_message WHERE chat_id=$1",
     [chatId],
@@ -216,8 +422,8 @@ async function prepare(
     throw new FamilyApiError(400, "这段对话已较长，请新建对话。");
   const previous = (
     await client.query(
-      "SELECT m.role,m.content FROM family_message m JOIN family_generation g ON g.id=m.generation_id WHERE m.chat_id=$1 AND g.state='complete' AND m.status='complete' ORDER BY m.position DESC LIMIT 40",
-      [chatId],
+      "SELECT m.role,m.content FROM family_message m JOIN family_generation g ON g.id=m.generation_id WHERE m.chat_id=$1 AND g.state='complete' AND m.status='complete' AND g.superseded_at IS NULL AND ($2::uuid IS NULL OR g.id<>$2) ORDER BY m.position DESC LIMIT 40",
+      [chatId, sourceGeneration],
     )
   ).rows;
   let chars = content.length;
@@ -232,8 +438,17 @@ async function prepare(
   const userMessageId = randomUUID();
   const assistantId = randomUUID();
   await client.query(
-    "INSERT INTO family_generation(id,user_id,chat_id,request_id,request_hash,model,state) VALUES($1,$2,$3,$4,$5,$6,'running')",
-    [id, userId, chatId, requestId, requestHash, model],
+    "INSERT INTO family_generation(id,user_id,chat_id,request_id,request_hash,model,mode,source_generation_id,state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'running')",
+    [
+      id,
+      userId,
+      chatId,
+      requestId,
+      intentHash(chatId, intent, model.id),
+      model.id,
+      intent.mode,
+      sourceGeneration,
+    ],
   );
   const rows = (
     await client.query(
@@ -241,9 +456,14 @@ async function prepare(
       [userMessageId, chatId, id, content, assistantId],
     )
   ).rows;
+  if (sourceGeneration)
+    await client.query(
+      "UPDATE family_generation SET superseded_at=now() WHERE id=$1 AND chat_id=$2 AND user_id=$3",
+      [sourceGeneration, chatId, userId],
+    );
   await client.query(
-    "UPDATE family_chat SET title=CASE WHEN title='新对话' THEN $2 ELSE title END,updated_at=now() WHERE id=$1",
-    [chatId, content.replace(/\s+/g, " ").slice(0, 40)],
+    "UPDATE family_chat SET title=CASE WHEN title='新对话' THEN $2 ELSE title END,model=$3,updated_at=now() WHERE id=$1",
+    [chatId, content.replace(/\s+/g, " ").slice(0, 40), model.id],
   );
   await client.query(
     "INSERT INTO family_activity(user_id,last_seen_at) VALUES($1,now()) ON CONFLICT(user_id) DO UPDATE SET last_seen_at=now()",
@@ -252,9 +472,11 @@ async function prepare(
   return {
     id,
     assistantId,
-    userMessage: messageJson(rows[0]),
-    assistantMessage: messageJson(rows[1]),
+    userMessage: messageJson({ ...rows[0], requested_model: model.id }),
+    assistantMessage: messageJson({ ...rows[1], requested_model: model.id }),
     history,
+    model,
+    replacedMessageIds,
   };
 }
 export async function generate(
@@ -264,12 +486,10 @@ export async function generate(
   body: Record<string, unknown>,
 ): Promise<Response> {
   validId(chatId);
-  const content = text(body.content, 12_000, "消息");
   const requestId = text(body.requestId, 100, "请求编号", 8);
   if (!/^[a-zA-Z0-9_-]+$/.test(requestId))
     throw new FamilyApiError(400, "请求编号格式无效。");
   const apiKey = process.env.OPENAI_API_KEY;
-  const model = process.env.FAMILY_OPENAI_MODEL?.trim() || "gpt-4o-mini";
   if (
     !(
       await getPool().query(
@@ -280,6 +500,7 @@ export async function generate(
   ) {
     throw new FamilyApiError(404, "对话不存在。");
   }
+  const intent = generationIntent(body);
   if (!apiKey)
     throw new FamilyApiError(
       503,
@@ -287,7 +508,7 @@ export async function generate(
       "MODEL_NOT_CONFIGURED",
     );
   const started = await transaction((client) =>
-    prepare(client, userId, chatId, content, requestId, model),
+    prepare(client, userId, chatId, intent, requestId),
   );
   const encoder = new TextEncoder();
   if (started.replay) {
@@ -296,6 +517,9 @@ export async function generate(
         type: "start",
         userMessage: started.userMessage,
         assistantMessage: started.assistantMessage,
+        ...(started.replacedMessageIds
+          ? { replacedMessageIds: started.replacedMessageIds }
+          : {}),
       },
       {
         type: "done",
@@ -355,6 +579,9 @@ export async function generate(
             type: "start",
             userMessage: started.userMessage,
             assistantMessage: started.assistantMessage,
+            ...(started.replacedMessageIds
+              ? { replacedMessageIds: started.replacedMessageIds }
+              : {}),
           });
           if (started.replay) {
             emit({
@@ -372,13 +599,9 @@ export async function generate(
                 Authorization: `Bearer ${apiKey}`,
                 "Content-Type": "application/json",
               },
-              body: JSON.stringify({
-                model,
-                messages: started.history,
-                stream: true,
-                stream_options: { include_usage: true },
-                max_completion_tokens: 2048,
-              }),
+              body: JSON.stringify(
+                completionBody(started.model, started.history),
+              ),
               signal: abort.signal,
               redirect: "error",
               cache: "no-store",
@@ -416,6 +639,21 @@ export async function generate(
             }
             parser.end();
             usage = parser.usage;
+            if (parser.finishReason === "length")
+              throw new FamilyApiError(
+                502,
+                "回复达到长度上限，已保存收到的内容。",
+              );
+            if (parser.finishReason === "content_filter")
+              throw new FamilyApiError(
+                502,
+                "模型未能完成这次回复，请调整问题后重试。",
+              );
+            if (!output.trim())
+              throw new FamilyApiError(
+                502,
+                "模型未返回可显示的回复，请重试或选择其他模型。",
+              );
           } finally {
             await reader.cancel().catch(() => undefined);
             reader.releaseLock();
@@ -427,6 +665,7 @@ export async function generate(
             output,
             "complete",
             usage,
+            parser.actualModel,
           );
           emit({ type: "done", message, usage });
         } catch (error) {
@@ -439,6 +678,7 @@ export async function generate(
               output,
               output ? "partial" : "error",
               usage,
+              parser.actualModel,
             ).catch(() => {
               saved = false;
             });
@@ -484,11 +724,19 @@ async function finishGeneration(
   content: string,
   state: "complete" | "partial" | "error",
   usage: FamilyUsage,
+  actualModel: string | null,
 ) {
   return transaction(async (client) => {
     await client.query(
-      "UPDATE family_generation SET state=$1,finished_at=now(),input_tokens=$2,output_tokens=$3,usage_source=$4 WHERE id=$5",
-      [state, usage.inputTokens, usage.outputTokens, usage.source, started.id],
+      "UPDATE family_generation SET state=$1,finished_at=now(),input_tokens=$2,output_tokens=$3,usage_source=$4,actual_model=$6 WHERE id=$5",
+      [
+        state,
+        usage.inputTokens,
+        usage.outputTokens,
+        usage.source,
+        started.id,
+        actualModel,
+      ],
     );
     const result = await client.query(
       "UPDATE family_message SET content=$1,status=$2 WHERE id=$3 RETURNING *",
@@ -498,6 +746,13 @@ async function finishGeneration(
       "UPDATE family_chat SET updated_at=now() WHERE id=(SELECT chat_id FROM family_generation WHERE id=$1)",
       [started.id],
     );
-    return { ...messageJson(result.rows[0]), usage };
+    return {
+      ...messageJson({
+        ...result.rows[0],
+        requested_model: started.model.id,
+        actual_model: actualModel,
+      }),
+      usage,
+    };
   });
 }

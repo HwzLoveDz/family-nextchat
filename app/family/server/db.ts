@@ -20,6 +20,13 @@ export function getPool(): Pool {
   const schema = process.env.FAMILY_DATABASE_SCHEMA;
   if (schema && !/^family_test_[a-f0-9]{16}$/.test(schema))
     throw new Error("INVALID_TEST_SCHEMA");
+  if (
+    schema &&
+    (process.env.VERCEL_ENV === "production" ||
+      (process.env.NODE_ENV === "production" &&
+        process.env.VERCEL_ENV !== "preview"))
+  )
+    throw new Error("TEST_SCHEMA_FORBIDDEN_IN_PRODUCTION");
   if (!pool) {
     pool = new Pool({
       connectionString: verifiedPostgresConnectionString(

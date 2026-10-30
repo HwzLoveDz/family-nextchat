@@ -10,6 +10,7 @@ import {
 } from "@testing-library/react";
 import { FamilyApp } from "../app/family/client";
 import type { FamilyChatDetail, FamilyUser } from "../app/family/types";
+import { FAMILY_NOTICE } from "../app/family/types";
 import { ReadableStream as NodeReadableStream } from "node:stream/web";
 import { TextDecoder as NodeTextDecoder, TextEncoder } from "node:util";
 
@@ -31,6 +32,7 @@ const memberB: FamilyUser = {
 const chat = (id: string) => ({
   id,
   title: `聊天 ${id}`,
+  model: "model-fast",
   archived: false,
   createdAt: "2026-10-30T00:00:00Z",
   updatedAt: "2026-10-30T00:00:00Z",
@@ -121,6 +123,24 @@ describe("family client account isolation", () => {
       if (path === "/api/family/chats")
         return json({ chats: [chat(identity?.id === memberB.id ? "b" : "a")] });
       if (path === "/api/family/activity") return json({ ok: true });
+      if (path === "/api/family/models")
+        return json({
+          models: [
+            {
+              id: "model-fast",
+              name: "快速模型",
+              description: "日常聊天",
+              reasoning: false,
+            },
+            {
+              id: "model-think",
+              name: "思考模型",
+              description: "复杂问题",
+              reasoning: true,
+            },
+          ],
+          defaultModel: "model-fast",
+        });
       if (path === "/api/family/chats/a") return json(detail("甲的私密回复"));
       throw new Error(`Unexpected fixture endpoint: ${path}`);
     };
@@ -129,6 +149,191 @@ describe("family client account isolation", () => {
   });
   afterEach(() => {
     global.fetch = originalFetch;
+  });
+
+  test("only the login notice removes the requested sentence while signup and service status retain their meaning", async () => {
+    identity = null;
+    const removedSentence =
+      "管理员可查看账号、聊天内容、模型回复、用量和前台活跃时长估算。";
+    const baseHandler = requestHandler;
+    requestHandler = async (path, init) =>
+      path === "/api/family/status"
+        ? json({
+            ready: true,
+            needsSetup: false,
+            dbConfigured: true,
+            notice: `${FAMILY_NOTICE} 模型 API 尚未配置。`,
+          })
+        : baseHandler(path, init);
+    const { container } = render(<FamilyApp />);
+    expect(
+      await screen.findByRole("button", { name: "登录" }),
+    ).toBeInTheDocument();
+    expect(container.textContent).not.toContain(removedSentence);
+    expect(container.textContent).toContain("模型 API 尚未配置。");
+    fireEvent.click(screen.getByRole("button", { name: "有邀请？申请加入" }));
+    expect(
+      await screen.findByRole("heading", { name: "加入家庭聊天" }),
+    ).toBeInTheDocument();
+    expect(container.textContent).toContain(removedSentence);
+  });
+
+  test("last-turn editing preserves an earlier draft and IME/Shift+Enter do not submit", async () => {
+    const createdAt = "2026-10-30T00:00:00Z";
+    let record: FamilyChatDetail = {
+      chat: chat("a"),
+      messages: [
+        {
+          id: "old-user",
+          role: "user",
+          content: "原来的提问",
+          status: "complete",
+          createdAt,
+        },
+        {
+          id: "old-assistant",
+          role: "assistant",
+          content: "原来的回复",
+          status: "complete",
+          createdAt,
+        },
+      ],
+    };
+    const baseHandler = requestHandler;
+    requestHandler = async (path, init) => {
+      if (path === "/api/family/chats/a") return json(record);
+      if (path === "/api/family/chats/a/messages") {
+        expect(JSON.parse(String(init?.body))).toMatchObject({
+          mode: "edit",
+          sourceMessageId: "old-user",
+          content: "已编辑的新提问",
+          model: "model-fast",
+        });
+        const userMessage = {
+          id: "new-user",
+          role: "user" as const,
+          content: "已编辑的新提问",
+          status: "complete" as const,
+          createdAt,
+        };
+        const assistantMessage = {
+          id: "new-assistant",
+          role: "assistant" as const,
+          content: "编辑后的新回复",
+          status: "complete" as const,
+          createdAt,
+        };
+        record = { chat: chat("a"), messages: [userMessage, assistantMessage] };
+        return streamResponse([
+          {
+            type: "start",
+            userMessage,
+            assistantMessage: {
+              ...assistantMessage,
+              content: "",
+              status: "streaming",
+            },
+            replacedMessageIds: ["old-user", "old-assistant"],
+          },
+          {
+            type: "done",
+            message: assistantMessage,
+            usage: { source: "unknown", inputTokens: null, outputTokens: null },
+          },
+        ]);
+      }
+      return baseHandler(path, init);
+    };
+    render(<FamilyApp />);
+    fireEvent.click(await screen.findByRole("button", { name: /聊天 a/ }));
+    expect(await screen.findByText("原来的回复")).toBeInTheDocument();
+    const input = screen.getByRole("textbox", { name: "发送消息" });
+    fireEvent.change(input, { target: { value: "尚未发送的原草稿" } });
+    fireEvent.click(screen.getByRole("button", { name: "编辑上一条提问" }));
+    expect(input).toHaveValue("原来的提问");
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: "输入法确认中的中文" } });
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    fireEvent.compositionEnd(input);
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
+    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+    expect(
+      fetchMock.mock.calls.some(
+        ([path]) => path === "/api/family/chats/a/messages",
+      ),
+    ).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "取消编辑" }));
+    expect(input).toHaveValue("尚未发送的原草稿");
+    fireEvent.click(screen.getByRole("button", { name: "编辑上一条提问" }));
+    fireEvent.change(input, { target: { value: "已编辑的新提问" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存并重新回复" }));
+    expect(await screen.findByText("编辑后的新回复")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "停止回复" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText("原来的回复")).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "发送消息" })).toHaveValue(
+      "尚未发送的原草稿",
+    );
+  });
+
+  test("a delayed owner export cannot download A's data after identity changes to B", async () => {
+    const originalCreate = Object.getOwnPropertyDescriptor(
+      URL,
+      "createObjectURL",
+    );
+    const originalRevoke = Object.getOwnPropertyDescriptor(
+      URL,
+      "revokeObjectURL",
+    );
+    const createUrl = jest.fn(() => "blob:synthetic-family-export");
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createUrl,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: jest.fn(),
+    });
+    let resolveExport!: (response: Response) => void;
+    const delayedExport = new Promise<Response>((resolve) => {
+      resolveExport = resolve;
+    });
+    let detailReads = 0;
+    const baseHandler = requestHandler;
+    requestHandler = async (path, init) => {
+      if (path === "/api/family/chats/a" && ++detailReads > 1)
+        return delayedExport;
+      return baseHandler(path, init);
+    };
+    const view = render(<FamilyApp />);
+    try {
+      fireEvent.click(await screen.findByRole("button", { name: /聊天 a/ }));
+      expect(await screen.findByText("甲的私密回复")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "导出 Markdown" }));
+      await waitFor(() => expect(detailReads).toBe(2));
+      identity = memberB;
+      fireEvent.focus(window);
+      expect(await screen.findByText(memberB.name)).toBeInTheDocument();
+      await act(async () => {
+        resolveExport(json(detail("不应导出的甲的私密回复")));
+        await delayedExport;
+      });
+      expect(createUrl).not.toHaveBeenCalled();
+      expect(
+        screen.queryByText("不应导出的甲的私密回复"),
+      ).not.toBeInTheDocument();
+    } finally {
+      view.unmount();
+      if (originalCreate)
+        Object.defineProperty(URL, "createObjectURL", originalCreate);
+      else Reflect.deleteProperty(URL, "createObjectURL");
+      if (originalRevoke)
+        Object.defineProperty(URL, "revokeObjectURL", originalRevoke);
+      else Reflect.deleteProperty(URL, "revokeObjectURL");
+    }
   });
 
   test("invitation stays in memory, is removed from URL, and registration waits for approval", async () => {
@@ -561,6 +766,7 @@ describe("family client account isolation", () => {
       expect(payload).toEqual({
         content: "用户的新问题",
         requestId: "00000000-0000-4000-8000-000000000001",
+        model: "model-fast",
       });
       const userMessage = {
         id: "server-user",

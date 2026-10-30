@@ -317,6 +317,152 @@
   font-size: 11px;
   margin-top: 3px;
 }
+.chatToolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.modelPicker {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-width: 180px;
+  max-width: 380px;
+  flex: 1;
+  font-size: 13px;
+}
+.shell .modelPicker select {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  border: 1px solid #cdd8cd;
+  border-radius: 9px;
+  background: var(--paper);
+  color: var(--ink);
+  padding: 10px;
+  font: inherit;
+  min-height: 44px;
+}
+.shell select:focus-visible {
+  outline: 3px solid #6a9982;
+  outline-offset: 3px;
+}
+.modelDescription {
+  flex: 1;
+  min-width: 130px;
+}
+.modelError {
+  color: #963f32;
+  font-size: 12px;
+  width: 100%;
+}
+.chatTools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  width: 100%;
+}
+.chatTools button {
+  font-size: 12px;
+  padding: 7px 12px;
+}
+.searchField {
+  display: block;
+}
+.shell .searchField input {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  text-align: left;
+  background: #fffefa;
+  font-size: 14px;
+  padding: 10px 12px;
+}
+.modelMeta {
+  display: block;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+.shell .copyButton {
+  min-height: 32px;
+  padding: 4px 8px;
+  font-size: 11px;
+  margin: 8px 0 -5px;
+}
+.turnActions {
+  display: flex;
+  justify-content: flex-end;
+  margin: -13px 0 13px;
+}
+.turnActions button {
+  min-height: 36px;
+  font-size: 12px;
+  padding: 5px 10px;
+}
+.editPanel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 14px 22px;
+  background: #f0f5e9;
+  border-bottom: 1px solid var(--line);
+}
+.editPanel label {
+  display: grid;
+  gap: 6px;
+  flex: 1;
+  min-width: 180px;
+  font-size: 13px;
+}
+.shell .editPanel input {
+  width: 100%;
+  max-width: 100%;
+  text-align: left;
+  font-size: 16px;
+}
+.editPanel > div {
+  display: flex;
+  gap: 7px;
+  align-items: flex-end;
+}
+.editingNotice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: center;
+  padding: 9px 12px;
+  background: #edf3e5;
+  border-radius: 9px;
+  font-size: 12px;
+}
+.editingNotice span {
+  color: var(--muted);
+  flex: 1;
+}
+.editingNotice button {
+  min-height: 32px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.inviteGuide {
+  margin-bottom: 20px;
+  padding: 18px;
+  border: 1px solid #cbdcc1;
+  background: #f0f5e9;
+  border-radius: 12px;
+}
+.inviteGuide h2 {
+  font-size: 18px;
+  margin-bottom: 7px;
+}
+.inviteGuide p {
+  font-size: 13px;
+  color: var(--muted);
+}
 .messages {
   overflow-y: auto;
   flex: 1;
@@ -675,6 +821,24 @@
   }
   .messages {
     padding: 20px 14px 5px;
+  }
+  .chatToolbar {
+    padding: 10px 14px;
+    gap: 8px;
+  }
+  .modelPicker {
+    max-width: none;
+    min-width: 100%;
+  }
+  .modelDescription {
+    font-size: 11px;
+  }
+  .chatTools {
+    gap: 6px;
+  }
+  .chatTools button {
+    padding: 6px 9px;
+    font-size: 11px;
   }
   .message {
     padding: 15px;
