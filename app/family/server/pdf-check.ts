@@ -1,6 +1,5 @@
 import "server-only";
-import { createRequire } from "node:module";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { Worker } from "node:worker_threads";
 import { PDFDocument } from "pdf-lib";
 import { FamilyApiError } from "./errors";
@@ -55,9 +54,17 @@ export async function inspectFamilyPdf(
   // This explicit dependency also makes Next trace the external package into the
   // server deployment. The worker resolves the same trusted installed module.
   if (typeof PDFDocument.load !== "function") throw invalidPdf();
-  const modulePath = createRequire(join(process.cwd(), "package.json")).resolve(
-    "pdf-lib",
+  // Imported createRequire().resolve("pdf-lib") is statically rewritten by
+  // webpack into a numeric module ID, unusable by an independent Node Worker.
+  // Resolve through Node 22's native module object at runtime instead. Keep the
+  // PDFDocument import above so Next still traces the external dependency.
+  const nativeModule = process.getBuiltinModule("module");
+  const runtimeRequire = nativeModule.createRequire(
+    join(process.cwd(), "package.json"),
   );
+  const modulePath = runtimeRequire.resolve("pdf-lib");
+  if (typeof modulePath !== "string" || !isAbsolute(modulePath))
+    throw invalidPdf();
   const copy = Uint8Array.from(bytes);
   return new Promise((resolve, reject) => {
     let worker: Worker | undefined;
