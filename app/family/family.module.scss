@@ -1003,24 +1003,48 @@
     overflow-y: auto;
     overscroll-behavior-y: contain;
     -webkit-overflow-scrolling: touch;
+    // Reserve the pinned action row so the last attachment/voice control can
+    // scroll completely above it, rather than becoming an obscured target.
+    padding-bottom: 76px;
+    scroll-padding-bottom: 80px;
   }
   .composer textarea {
     min-height: 52px;
     max-height: min(120px, 20dvh);
     padding: 9px 10px;
   }
-  .composerActions {
-    padding-left: 8px;
+  .composer > .composerActions {
+    padding: 4px 8px 6px;
     gap: 8px;
-    position: sticky;
-    bottom: 0;
-    z-index: 1;
+    // A bottom-only sticky element can remain below this form's initial
+    // scrollport. Pin to the *visual* viewport, including keyboard panning.
+    position: fixed;
+    top: calc(
+      var(--family-viewport-top, 0px) + var(--family-viewport-height, 100dvh) - max(
+          10px,
+          env(safe-area-inset-bottom)
+        ) - 7px
+    );
+    left: calc(max(10px, env(safe-area-inset-left)) + 7px);
+    right: calc(max(10px, env(safe-area-inset-right)) + 7px);
+    bottom: auto;
+    height: 60px;
+    min-height: 60px;
+    transform: translateY(-100%);
+    z-index: 3; // Below the existing drawer/backdrop layers (12/11).
     background: var(--paper);
+    border-top: 1px solid var(--line);
+    border-radius: 0 0 8px 8px;
     justify-content: flex-end;
+    flex-wrap: nowrap;
+  }
+  .composerActions > button {
+    flex-shrink: 0;
   }
   .composerActions small {
     flex: 1 1 120px;
     min-width: 0;
+    line-height: 1.4;
   }
   .voiceTools {
     padding: 2px 6px;
