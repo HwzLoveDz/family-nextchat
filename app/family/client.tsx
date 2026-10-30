@@ -96,7 +96,7 @@ function markdownExport(detail: FamilyChatDetail) {
   return [
     `# ${detail.chat.title || "新聊天"}`,
     "",
-    "管理员可查看聊天记录与用量。以下为当前账户导出的聊天。",
+    "以下为当前账户导出的聊天。",
     "",
     ...detail.messages.flatMap((message) => [
       `## ${message.role === "user" ? "我" : "AI"}`,
@@ -1383,14 +1383,7 @@ export function FamilyApp() {
               ? "首次使用，请由网站管理员完成初始化。"
               : "一个只对受邀家人开放的聊天空间。"}
           </p>
-          <div className={styles.privacyNotice}>
-            {screen === "login"
-              ? siteNotice.replace(
-                  "管理员可查看账号、聊天内容、模型回复、用量和前台活跃时长估算。",
-                  "",
-                )
-              : siteNotice}
-          </div>
+          <div className={styles.privacyNotice}>{siteNotice}</div>
           {error ? (
             <p className={styles.error} role="alert">
               {error}
@@ -1740,7 +1733,6 @@ export function FamilyApp() {
                   : chats.find((chat) => chat.id === selectedChat)?.title ||
                     "新聊天"}
               </h1>
-              <p>管理员可查看聊天记录与用量</p>
             </div>
             {user.role === "admin" && screen !== "admin" ? (
               <button
@@ -1926,7 +1918,7 @@ export function FamilyApp() {
           ) : null}
           {screen === "chat" && selectedChat && archiveConfirm ? (
             <div className={styles.archivePrompt}>
-              <p>归档后从你的列表隐藏，管理员仍可查看。</p>
+              <p>归档后从你的列表隐藏。</p>
               <div>
                 <button
                   disabled={working || sending}
@@ -1947,7 +1939,7 @@ export function FamilyApp() {
                       setDraft("");
                       setArchiveConfirm(false);
                       await loadChats();
-                      setNotice("对话已归档，管理员仍可查看。");
+                      setNotice("对话已归档。");
                     })
                   }
                 >
@@ -2268,9 +2260,7 @@ export function FamilyApp() {
                     <span className={styles.welcomeIcon}>聊</span>
                     <h2>想聊点什么？</h2>
                     <p>问问题、理思路，或者分享今天的新鲜事。</p>
-                    <p className={styles.muted}>
-                      聊天保存在你的账户中，管理员可查看记录与用量。
-                    </p>
+                    <p className={styles.muted}>聊天保存在你的账户中。</p>
                   </div>
                 )}
                 <div ref={bottom} />
@@ -2376,7 +2366,7 @@ export function FamilyApp() {
                 {editingMessage ? (
                   <div className={styles.editingNotice}>
                     <strong>编辑上一条提问</strong>
-                    <span>将重新回复这一轮，旧版本仍由管理员保留。</span>
+                    <span>将重新回复这一轮。</span>
                     <button
                       type="button"
                       className={styles.textButton}
@@ -2578,7 +2568,7 @@ export function FamilyApp() {
                   <small>
                     Enter 发送 · Shift+Enter 换行
                     <br />
-                    AI 回答可能有误 · 管理员可查看记录
+                    AI 回答可能有误
                   </small>
                   {sending || cancelPending ? (
                     <button

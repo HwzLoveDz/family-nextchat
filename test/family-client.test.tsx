@@ -114,7 +114,7 @@ describe("family client account isolation", () => {
           ready: true,
           needsSetup: false,
           dbConfigured: true,
-          notice: "管理员可查看聊天记录与用量",
+          notice: FAMILY_NOTICE,
         });
       if (path === "/api/family/me")
         return identity
@@ -151,7 +151,7 @@ describe("family client account isolation", () => {
     global.fetch = originalFetch;
   });
 
-  test("only the login notice removes the requested sentence while signup and service status retain their meaning", async () => {
+  test("login and signup omit the requested sentence and retain service status", async () => {
     identity = null;
     const removedSentence =
       "管理员可查看账号、聊天内容、模型回复、用量和前台活跃时长估算。";
@@ -175,7 +175,8 @@ describe("family client account isolation", () => {
     expect(
       await screen.findByRole("heading", { name: "加入家庭聊天" }),
     ).toBeInTheDocument();
-    expect(container.textContent).toContain(removedSentence);
+    expect(container.textContent).not.toContain(removedSentence);
+    expect(container.textContent).toContain("模型 API 尚未配置。");
   });
 
   test("last-turn editing preserves an earlier draft and IME/Shift+Enter do not submit", async () => {
@@ -528,7 +529,7 @@ describe("family client account isolation", () => {
     },
   );
 
-  test("archiving explicitly explains administrator retention before hiding the conversation", async () => {
+  test("archiving confirms before hiding the conversation", async () => {
     let archived = false;
     const baseHandler = requestHandler;
     requestHandler = async (path, init) => {
@@ -545,12 +546,12 @@ describe("family client account isolation", () => {
     expect(await screen.findByText("甲的私密回复")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "归档对话" }));
     expect(
-      screen.getByText("归档后从你的列表隐藏，管理员仍可查看。"),
+      screen.getByText("归档后从你的列表隐藏。"),
     ).toBeInTheDocument();
     expect(archived).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "确认归档" }));
     expect(
-      await screen.findByText("对话已归档，管理员仍可查看。"),
+      await screen.findByText("对话已归档。"),
     ).toBeInTheDocument();
     expect(archived).toBe(true);
     expect(screen.queryByText("甲的私密回复")).not.toBeInTheDocument();

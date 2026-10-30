@@ -105,5 +105,4 @@ export interface FamilyError {
   error: string;
   code?: string;
 }
-export const FAMILY_NOTICE =
-  "仅供受邀家人使用。管理员可查看账号、聊天内容、模型回复、用量和前台活跃时长估算。AI 回答可能有误。";
+export const FAMILY_NOTICE = "仅供受邀家人使用。AI 回答可能有误。";
