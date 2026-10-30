@@ -58,7 +58,12 @@ export async function inspectFamilyPdf(
   // webpack into a numeric module ID, unusable by an independent Node Worker.
   // Resolve through Node 22's native module object at runtime instead. Keep the
   // PDFDocument import above so Next still traces the external dependency.
-  const nativeModule = process.getBuiltinModule("module");
+  // This repository retains older Node typings; the deployed runtime is Node 22.
+  const nativeModule = (
+    process as typeof process & {
+      getBuiltinModule(id: "module"): typeof import("node:module");
+    }
+  ).getBuiltinModule("module");
   const runtimeRequire = nativeModule.createRequire(
     join(process.cwd(), "package.json"),
   );
