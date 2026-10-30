@@ -77,19 +77,27 @@ export function middleware(request: NextRequest) {
     // Allow the existing same-origin worker to update to the cleanup-only
     // version. The family UI does not register a new worker or private cache.
     "worker-src 'self'",
-    "media-src 'none'",
+    "media-src 'self' blob:",
     "base-uri 'none'",
     "form-action 'self'",
     "frame-ancestors 'none'",
   ].join("; ");
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-nonce", nonce);
-  requestHeaders.set("Content-Security-Policy", csp);
+  const responseCsp = isApi
+    ? PRIVATE_API_HEADERS["Content-Security-Policy"]
+    : csp;
+  requestHeaders.set("Content-Security-Policy", responseCsp);
   const response = NextResponse.next({ request: { headers: requestHeaders } });
   for (const [key, value] of Object.entries(PRIVATE_API_HEADERS)) {
     response.headers.set(key, value);
   }
-  response.headers.set("Content-Security-Policy", csp);
+  if (!isApi)
+    response.headers.set(
+      "Permissions-Policy",
+      "camera=(), microphone=(self), geolocation=()",
+    );
+  response.headers.set("Content-Security-Policy", responseCsp);
   return response;
 }
 

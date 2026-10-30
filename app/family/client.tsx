@@ -31,6 +31,7 @@ import {
   FAMILY_SESSION_EVENT,
 } from "./client-cleanup";
 import styles from "./family.module.scss";
+import { useFamilyVoice, type VoiceScope } from "./use-family-voice";
 
 type Screen =
   | "loading"
@@ -71,6 +72,19 @@ function usageText(usage?: FamilyUsage) {
       } token`
     : "用量未知";
 }
+function withinVoiceButton(event: {
+  currentTarget: HTMLButtonElement;
+  clientX: number;
+  clientY: number;
+}) {
+  const rect = event.currentTarget.getBoundingClientRect();
+  return (
+    event.clientX >= rect.left &&
+    event.clientX <= rect.right &&
+    event.clientY >= rect.top &&
+    event.clientY <= rect.bottom
+  );
+}
 function modelText(message: FamilyMessage) {
   return message.model
     ? `实际模型 ${message.model}`
@@ -102,11 +116,15 @@ const MessageBody = memo(function MessageBody({
   userLabel = "你",
   onCopy,
   copied = false,
+  onSpeak,
+  speechDisabled = false,
 }: {
   message: FamilyMessage;
   userLabel?: string;
   onCopy?: (message: FamilyMessage) => void;
   copied?: boolean;
+  onSpeak?: (message: FamilyMessage) => void;
+  speechDisabled?: boolean;
 }) {
   return (
     <article
@@ -184,6 +202,21 @@ const MessageBody = memo(function MessageBody({
           aria-label={`复制${message.role === "user" ? "提问" : "回复"}`}
         >
           {copied ? "已复制" : "复制"}
+        </button>
+      ) : null}
+      {onSpeak &&
+      message.role === "assistant" &&
+      ["complete", "partial"].includes(message.status) &&
+      message.content &&
+      !message.superseded ? (
+        <button
+          type="button"
+          className={`${styles.textButton} ${styles.copyButton}`}
+          disabled={speechDisabled}
+          onClick={() => onSpeak(message)}
+          aria-label="朗读回复"
+        >
+          朗读 · AI声音
         </button>
       ) : null}
     </article>
@@ -268,6 +301,9 @@ export function FamilyApp() {
     expiresAt: string;
   } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [autoReadVoice, setAutoReadVoice] = useState(true);
+  const [tapRecord, setTapRecord] = useState(false);
+  const [voiceOutside, setVoiceOutside] = useState(false);
 
   const epoch = useRef(0);
   const currentUser = useRef<FamilyUser | null>(null);
@@ -300,6 +336,37 @@ export function FamilyApp() {
   const composerInput = useRef<HTMLTextAreaElement>(null);
   const downloadUrls = useRef(new Set<string>());
   const downloadTimers = useRef(new Set<number>());
+  const voiceReset = useRef<() => void>(() => {});
+  const voiceSubmit = useRef<
+    (text: string, scope: VoiceScope) => void | Promise<void>
+  >(() => {});
+  const voiceRevalidate = useRef<() => void>(() => {});
+  const autoReadVoiceRef = useRef(true);
+  autoReadVoiceRef.current = autoReadVoice;
+  const voice = useFamilyVoice({
+    getScope: () => ({
+      epoch: epoch.current,
+      userId: currentUser.current?.id ?? null,
+      chatId: selectedChatRef.current,
+      model: selectedModel,
+      verified: identityVerified.current,
+      canRecord:
+        screen === "chat" &&
+        !draft.trim() &&
+        !editingMessage &&
+        !sending &&
+        !cancelPending &&
+        !working &&
+        !checking &&
+        !detailLoading &&
+        status?.schemaReady !== false &&
+        models.some((model) => model.id === selectedModel),
+    }),
+    onTranscript: (text, scope) => voiceSubmit.current(text, scope),
+    onError: (message) => setError(message),
+    onUnauthorized: () => voiceRevalidate.current(),
+  });
+  voiceReset.current = voice.reset;
 
   const request = useCallback(
     async <T,>(
@@ -350,6 +417,7 @@ export function FamilyApp() {
 
   const clearPrivate = useCallback((preserveInvite = false) => {
     epoch.current += 1;
+    voiceReset.current();
     listVersion.current += 1;
     adminVersion.current += 1;
     controllers.current.forEach((controller) => controller.abort());
@@ -399,6 +467,9 @@ export function FamilyApp() {
     setAdminDetail(null);
     setNewInvite(null);
     setCopied(false);
+    setAutoReadVoice(true);
+    setTapRecord(false);
+    setVoiceOutside(false);
     if (!preserveInvite) setInviteToken("");
     setNotice("");
   }, []);
@@ -406,6 +477,7 @@ export function FamilyApp() {
   const checkIdentity = useCallback(async () => {
     if (logoutIntent.current) return;
     const verification = ++checkSequence.current;
+    voiceReset.current();
     identityVerified.current = false;
     setChecking(true);
     try {
@@ -461,6 +533,9 @@ export function FamilyApp() {
       if (verification === checkSequence.current) setChecking(false);
     }
   }, [clearPrivate, request]);
+  voiceRevalidate.current = () => {
+    void checkIdentity();
+  };
 
   const broadcastChange = useCallback((kind: "login" | "logout") => {
     const event = { kind, id: crypto.randomUUID() };
@@ -531,6 +606,7 @@ export function FamilyApp() {
     return () => {
       active = false;
       epoch.current += 1;
+      voiceReset.current();
       controllers.current.forEach((controller) => controller.abort());
       controllers.current.clear();
       activeGeneration.current = null;
@@ -735,6 +811,7 @@ export function FamilyApp() {
   };
 
   const selectChat = async (id: string) => {
+    voiceReset.current();
     const version = ++listVersion.current;
     const generation = epoch.current;
     selectedChatRef.current = id;
@@ -771,6 +848,7 @@ export function FamilyApp() {
     );
   };
   const changeModel = async (model: string) => {
+    voiceReset.current();
     if (!models.some((item) => item.id === model)) return;
     if (selectedChat) {
       const response = await request<{ chat: FamilyChat }>(
@@ -847,8 +925,10 @@ export function FamilyApp() {
   const generateMessage = async (
     mode: "send" | "edit" | "retry" | "regenerate" = "send",
     sourceMessageId?: string,
+    contentOverride?: string,
+    voiceOrigin = false,
   ) => {
-    const content = draft.trim();
+    const content = (contentOverride ?? draft).trim();
     if (
       ((mode === "send" || mode === "edit") && !content) ||
       sending ||
@@ -885,6 +965,7 @@ export function FamilyApp() {
     let rejectedBeforeStream = false;
     let serverStreamError = false;
     let accepted = false;
+    let completedReply: FamilyMessage | null = null;
     try {
       if (!chatId) {
         const data = await request<{ chat: FamilyChat }>("/api/family/chats", {
@@ -902,14 +983,15 @@ export function FamilyApp() {
       const requestId = crypto.randomUUID();
       const userId = `local-user-${requestId}`;
       temporaryUserId = userId;
-      assistantId = `local-assistant-${requestId}`;
+      const optimisticAssistantId = `local-assistant-${requestId}`;
+      assistantId = optimisticAssistantId;
       const createdAt = new Date().toISOString();
       if (mode === "send")
         setMessages((previous) => [
           ...previous,
           { id: userId, role: "user", content, status: "complete", createdAt },
           {
-            id: assistantId,
+            id: optimisticAssistantId,
             role: "assistant",
             content: "",
             status: "streaming",
@@ -976,6 +1058,8 @@ export function FamilyApp() {
           const replaced = new Set([
             userId,
             previousAssistantId,
+            streamEvent.userMessage.id,
+            streamEvent.assistantMessage.id,
             ...(streamEvent.replacedMessageIds ?? []),
           ]);
           setMessages((previous) => [
@@ -998,6 +1082,7 @@ export function FamilyApp() {
           );
         } else if (streamEvent.type === "done") {
           done = true;
+          completedReply = { ...streamEvent.message, usage: streamEvent.usage };
           setMessages((previous) =>
             previous.map((message) =>
               message.id === assistantId
@@ -1094,7 +1179,32 @@ export function FamilyApp() {
         activeGeneration.current === active
       )
         activeGeneration.current = null;
+      if (
+        generation === epoch.current &&
+        identityVerified.current &&
+        voiceOrigin &&
+        !cancelPendingRef.current &&
+        !active?.cancelAcknowledged &&
+        !active?.alreadyComplete &&
+        autoReadVoiceRef.current &&
+        done &&
+        completedReply &&
+        chatId
+      )
+        void voice.speak(chatId, completedReply);
     }
+  };
+  voiceSubmit.current = async (text, scope) => {
+    if (
+      scope.epoch !== epoch.current ||
+      scope.userId !== currentUser.current?.id ||
+      scope.chatId !== selectedChatRef.current ||
+      scope.model !== selectedModel ||
+      !identityVerified.current ||
+      draft.trim()
+    )
+      return;
+    await generateMessage("send", undefined, text, true);
   };
 
   const stopGeneration = async () => {
@@ -1189,6 +1299,7 @@ export function FamilyApp() {
   };
 
   const openAdmin = async () => {
+    voiceReset.current();
     const data = await request<{ users: FamilyAdminUser[] }>(
       "/api/family/admin/users",
     );
@@ -1233,6 +1344,7 @@ export function FamilyApp() {
     sending ||
     working ||
     cancelPending ||
+    voice.busy ||
     detailLoading ||
     lastAssistantMessage?.status === "streaming";
 
@@ -1461,7 +1573,7 @@ export function FamilyApp() {
           <h1>{user.role === "admin" ? "更新聊天功能" : "服务正在升级"}</h1>
           <p className={styles.subtitle}>
             {user.role === "admin"
-              ? "更新后即可使用模型选择与聊天编辑。账号和已有聊天会保留。"
+              ? "更新后即可使用语音聊天。账号和已有聊天会保留。"
               : "请等待管理员更新聊天功能，稍后再来。"}
           </p>
           {error ? (
@@ -1515,11 +1627,12 @@ export function FamilyApp() {
             </button>
           </div>
           <button
-            disabled={sending || working}
+            disabled={sending || working || voice.busy}
             onClick={() => {
               ++listVersion.current;
               setScreen("chat");
               setSelectedChat(null);
+              voiceReset.current();
               selectedChatRef.current = null;
               setActiveChat(null);
               setSelectedModel(defaultModel.current);
@@ -1540,6 +1653,7 @@ export function FamilyApp() {
             <input
               type="search"
               value={search}
+              disabled={voice.busy}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="搜索聊天标题"
             />
@@ -1566,7 +1680,7 @@ export function FamilyApp() {
                       ? styles.activeChat
                       : ""
                   }
-                  disabled={sending || working}
+                  disabled={sending || working || voice.busy}
                   onClick={() => {
                     setScreen("chat");
                     void run(() => selectChat(chat.id));
@@ -1591,7 +1705,7 @@ export function FamilyApp() {
             {user.role === "admin" ? (
               <button
                 className={styles.secondary}
-                disabled={sending || working}
+                disabled={sending || working || voice.busy}
                 onClick={() => void run(openAdmin)}
               >
                 账户与用量管理
@@ -1614,6 +1728,7 @@ export function FamilyApp() {
             <button
               className={styles.mobileOnly}
               aria-label="打开会话列表"
+              disabled={voice.busy}
               onClick={() => setSidebarOpen(true)}
             >
               会话
@@ -1629,7 +1744,7 @@ export function FamilyApp() {
             </div>
             {user.role === "admin" && screen !== "admin" ? (
               <button
-                disabled={sending || working}
+                disabled={sending || working || voice.busy}
                 onClick={() => void run(openAdmin)}
               >
                 邀请家人
@@ -1660,6 +1775,7 @@ export function FamilyApp() {
                     working ||
                     detailLoading ||
                     modelLoading ||
+                    voice.busy ||
                     models.length === 0
                   }
                   onChange={(event) =>
@@ -1723,7 +1839,7 @@ export function FamilyApp() {
                 </button>
                 <button
                   className={styles.secondary}
-                  disabled={sending || working || cancelPending}
+                  disabled={sending || working || cancelPending || voice.busy}
                   onClick={() =>
                     void run(async () => {
                       await loadChats();
@@ -1822,6 +1938,7 @@ export function FamilyApp() {
                       );
                       ++listVersion.current;
                       setSelectedChat(null);
+                      voiceReset.current();
                       selectedChatRef.current = null;
                       setActiveChat(null);
                       setEditingMessage(null);
@@ -1952,6 +2069,24 @@ export function FamilyApp() {
                       </dd>
                       <dt>用量未知的请求</dt>
                       <dd>{account.unknownUsageRequests}</dd>
+                      <dt>语音请求 / 用量未知</dt>
+                      <dd>
+                        {account.voiceRequests ?? "未报告"} /{" "}
+                        {account.voiceUnknownUsageRequests ?? "未报告"}
+                      </dd>
+                      <dt>语音已报告输入 / 输出 token</dt>
+                      <dd>
+                        {account.voiceInputTokens?.toLocaleString() ?? "未报告"}{" "}
+                        /{" "}
+                        {account.voiceOutputTokens?.toLocaleString() ??
+                          "未报告"}
+                      </dd>
+                      <dt>录音与播报时长（非计费）</dt>
+                      <dd>
+                        {account.voiceAudioSeconds === undefined
+                          ? "未报告"
+                          : `${account.voiceAudioSeconds.toFixed(1)} 秒`}
+                      </dd>
                       <dt>最近访问</dt>
                       <dd>{dateText(account.lastSeenAt)}</dd>
                     </dl>
@@ -2077,6 +2212,16 @@ export function FamilyApp() {
                           message={message}
                           onCopy={copyMessage}
                           copied={copiedMessage === message.id}
+                          onSpeak={(reply) => {
+                            if (selectedChat)
+                              void voice.speak(selectedChat, reply);
+                          }}
+                          speechDisabled={
+                            voice.phase !== "idle" ||
+                            sending ||
+                            cancelPending ||
+                            working
+                          }
                         />
                         {message.id === lastUserMessage?.id ? (
                           <div className={styles.turnActions}>
@@ -2140,6 +2285,94 @@ export function FamilyApp() {
                   );
                 }}
               >
+                {voice.phase !== "idle" ? (
+                  <div className={styles.voiceStatus} role="status">
+                    <span>
+                      {voice.phase === "permission"
+                        ? "正在等待麦克风权限；允许后可重新按住说话。"
+                        : voice.phase === "recording"
+                        ? `${
+                            voiceOutside ? "松手取消" : "正在录音，松开发送"
+                          } · ${voice.seconds}/45 秒`
+                        : voice.phase === "processing"
+                        ? "正在处理录音…"
+                        : "正在识别语音…"}
+                    </span>
+                    <button
+                      type="button"
+                      className={styles.textButton}
+                      onClick={() => {
+                        voice.cancelRecording();
+                        setNotice("已取消语音输入。");
+                      }}
+                    >
+                      取消语音
+                    </button>
+                  </div>
+                ) : null}
+                {voice.playback.status !== "idle" ? (
+                  <div className={styles.voicePlayback} role="status">
+                    <span>
+                      {voice.playback.status === "loading"
+                        ? "正在生成 AI 语音…"
+                        : voice.playback.status === "ready"
+                        ? "AI 语音已就绪，点击播放"
+                        : voice.playback.status === "paused"
+                        ? "AI 语音已暂停"
+                        : voice.playback.status === "ended"
+                        ? "AI 语音朗读已结束"
+                        : "正在播放 AI 生成声音"}
+                      {voice.playback.parts > 0
+                        ? ` · ${voice.playback.part + 1}/${
+                            voice.playback.parts
+                          } 段`
+                        : ""}
+                    </span>
+                    <div>
+                      {voice.playback.status === "playing" ? (
+                        <button
+                          type="button"
+                          className={styles.textButton}
+                          onClick={voice.pause}
+                        >
+                          暂停
+                        </button>
+                      ) : ["paused", "ready"].includes(
+                          voice.playback.status,
+                        ) ? (
+                        <button
+                          type="button"
+                          onClick={() => void voice.resume()}
+                        >
+                          {voice.playback.status === "ready"
+                            ? "点击播放"
+                            : "继续播放"}
+                        </button>
+                      ) : null}
+                      {voice.playback.status !== "loading" ? (
+                        <button
+                          type="button"
+                          className={styles.textButton}
+                          onClick={voice.replay}
+                        >
+                          重播已生成语音
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className={styles.textButton}
+                        onClick={voice.stopPlayback}
+                      >
+                        停止播放
+                      </button>
+                    </div>
+                    {voice.playback.truncated ? (
+                      <small>
+                        回复较长，仅朗读前 10 段；完整文字保留在聊天中。
+                      </small>
+                    ) : null}
+                  </div>
+                ) : null}
                 {editingMessage ? (
                   <div className={styles.editingNotice}>
                     <strong>编辑上一条提问</strong>
@@ -2169,7 +2402,13 @@ export function FamilyApp() {
                   placeholder={editingMessage ? "修改上一条提问…" : "输入消息…"}
                   rows={3}
                   maxLength={12000}
-                  disabled={sending || checking || working || detailLoading}
+                  disabled={
+                    sending ||
+                    checking ||
+                    working ||
+                    detailLoading ||
+                    voice.busy
+                  }
                   enterKeyHint="send"
                   onCompositionStart={() => {
                     composing.current = true;
@@ -2190,6 +2429,151 @@ export function FamilyApp() {
                     }
                   }}
                 />
+                <div className={styles.voiceTools}>
+                  <button
+                    type="button"
+                    className={`${styles.voiceButton} ${
+                      voice.phase === "recording" ? styles.voiceRecording : ""
+                    }`}
+                    aria-label={
+                      tapRecord
+                        ? "点击录音，再次点击发送"
+                        : "按住说话，松开发送，移出取消"
+                    }
+                    aria-pressed={voice.phase === "recording"}
+                    aria-describedby="family-voice-help"
+                    disabled={
+                      ["processing", "transcribing"].includes(voice.phase) ||
+                      (voice.phase === "idle" &&
+                        (!voice.supported ||
+                          !!draft.trim() ||
+                          !!editingMessage ||
+                          sending ||
+                          cancelPending ||
+                          working ||
+                          checking ||
+                          detailLoading ||
+                          !chosenModel ||
+                          voice.busy))
+                    }
+                    onContextMenu={(event) => event.preventDefault()}
+                    onPointerDown={(event) => {
+                      if (
+                        tapRecord ||
+                        (event.pointerType === "mouse" && event.button !== 0)
+                      )
+                        return;
+                      event.preventDefault();
+                      setVoiceOutside(false);
+                      try {
+                        event.currentTarget.setPointerCapture(event.pointerId);
+                      } catch {
+                        /* leaving the button cancels without capture */
+                      }
+                      voice.startRecording();
+                    }}
+                    onPointerMove={(event) => {
+                      if (
+                        !tapRecord &&
+                        ["recording", "permission"].includes(voice.phase) &&
+                        !withinVoiceButton(event)
+                      ) {
+                        setVoiceOutside(true);
+                        voice.cancelRecording();
+                        setNotice("已移出按钮，取消语音输入。");
+                      }
+                    }}
+                    onPointerUp={(event) => {
+                      if (tapRecord) return;
+                      event.preventDefault();
+                      if (withinVoiceButton(event)) voice.releaseRecording();
+                      else {
+                        voice.cancelRecording();
+                        setNotice("已取消语音输入。");
+                      }
+                      try {
+                        event.currentTarget.releasePointerCapture(
+                          event.pointerId,
+                        );
+                      } catch {
+                        /* already released */
+                      }
+                    }}
+                    onPointerCancel={() => voice.cancelRecording()}
+                    onLostPointerCapture={voice.cancelGesture}
+                    onPointerLeave={(event) => {
+                      if (
+                        !tapRecord &&
+                        ["recording", "permission"].includes(voice.phase)
+                      ) {
+                        setVoiceOutside(true);
+                        voice.cancelRecording();
+                        setNotice("已移出按钮，取消语音输入。");
+                      }
+                    }}
+                    onKeyDown={(event) => {
+                      if (tapRecord || ![" ", "Enter"].includes(event.key))
+                        return;
+                      event.preventDefault();
+                      if (!event.repeat) {
+                        setVoiceOutside(false);
+                        voice.startRecording();
+                      }
+                    }}
+                    onKeyUp={(event) => {
+                      if (tapRecord || ![" ", "Enter"].includes(event.key))
+                        return;
+                      event.preventDefault();
+                      voice.releaseRecording();
+                    }}
+                    onBlur={voice.cancelGesture}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      if (!tapRecord) return;
+                      if (voice.phase === "recording") voice.releaseRecording();
+                      else if (voice.phase === "permission")
+                        voice.cancelRecording();
+                      else voice.startRecording();
+                    }}
+                  >
+                    {voice.phase === "recording"
+                      ? tapRecord
+                        ? "结束并发送"
+                        : voiceOutside
+                        ? "松手取消"
+                        : "松开发送"
+                      : voice.phase === "permission"
+                      ? "等待麦克风…"
+                      : tapRecord
+                      ? "点击开始录音"
+                      : "按住说话"}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.textButton}
+                    disabled={voice.busy}
+                    onClick={() => setTapRecord((value) => !value)}
+                  >
+                    {tapRecord ? "切换为按住说话" : "点击录音模式"}
+                  </button>
+                  <label className={styles.voiceOption}>
+                    <input
+                      type="checkbox"
+                      checked={autoReadVoice}
+                      onChange={(event) =>
+                        setAutoReadVoice(event.target.checked)
+                      }
+                    />
+                    语音提问后自动朗读 AI 回复
+                  </label>
+                </div>
+                <p id="family-voice-help" className={styles.voiceHelp}>
+                  {draft.trim()
+                    ? "输入框有未发送文字，请先发送或清空后再录音。"
+                    : !voice.supported
+                    ? "此浏览器暂不支持录音；仍可使用文字聊天。"
+                    : "松开发送，移出取消。最长 45 秒自动结束，仅发送前 45 秒；首次允许麦克风后请重新录音。"}
+                </p>
                 <div className={styles.composerActions}>
                   <small>
                     Enter 发送 · Shift+Enter 换行
@@ -2220,7 +2604,8 @@ export function FamilyApp() {
                         cancelPending ||
                         lastAssistantMessage?.status === "streaming" ||
                         (selectedChat !== null && !activeChat) ||
-                        !chosenModel
+                        !chosenModel ||
+                        voice.busy
                       }
                     >
                       {editingMessage ? "保存并重新回复" : "发送 ↑"}

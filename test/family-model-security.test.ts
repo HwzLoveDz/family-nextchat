@@ -122,10 +122,10 @@ describe("family application upgrade boundaries", () => {
     expect(clientQuery).not.toHaveBeenCalled();
   });
 
-  test("an older v2 marker cannot enable requests without the required cancellation column", async () => {
+  test("a version marker cannot enable requests without the required application columns", async () => {
     poolQuery
       .mockResolvedValueOnce(readyMetadata(false))
-      .mockResolvedValueOnce(result([{ version: 2 }]));
+      .mockResolvedValueOnce(result([{ version: 3 }]));
     await expect(
       upgrades.requireFamilyApplicationUpgrade(),
     ).rejects.toBeInstanceOf(FamilyApiError);
@@ -133,13 +133,13 @@ describe("family application upgrade boundaries", () => {
       poolQuery.mock.calls.every(([sql]) => /^SELECT\b/.test(sql.trim())),
     ).toBe(true);
     expect(clientQuery).not.toHaveBeenCalled();
-    expect(poolQuery.mock.calls[0][0]).toContain("count(*) = 6");
+    expect(poolQuery.mock.calls[0][0]).toContain("count(*) = 23");
     expect(poolQuery.mock.calls[0][0]).toContain(
       "('family_generation','cancel_requested_at','timestamp with time zone','YES')",
     );
   });
 
-  test.each([undefined, 0, 1, "2", -1])(
+  test.each([undefined, 0, 1, 2, "3", -1])(
     "missing, old, or invalid version %p cannot pass readiness",
     async (version) => {
       poolQuery
@@ -155,10 +155,10 @@ describe("family application upgrade boundaries", () => {
     },
   );
 
-  test("a complete v2 schema is accepted through SELECTs alone", async () => {
+  test("a complete v3 schema is accepted through SELECTs alone", async () => {
     poolQuery
       .mockResolvedValueOnce(readyMetadata())
-      .mockResolvedValueOnce(result([{ version: 2 }]));
+      .mockResolvedValueOnce(result([{ version: 3 }]));
     await expect(
       upgrades.requireFamilyApplicationUpgrade(),
     ).resolves.toBeUndefined();

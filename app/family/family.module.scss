@@ -632,6 +632,87 @@
 .composerActions small {
   font-size: 10px;
 }
+.voiceTools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 4px 10px;
+}
+.shell .voiceButton {
+  background: #edf3e7;
+  color: var(--accent);
+  border: 1px solid #cbdcc1;
+  flex: 1;
+  min-width: 120px;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.shell .voiceRecording {
+  background: #e2edda;
+  border-color: #81a475;
+}
+.voiceTools > .textButton {
+  font-size: 11px;
+  padding: 6px 8px;
+}
+.voiceOption {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--muted);
+  flex-basis: 100%;
+  padding: 5px 1px;
+}
+.shell .voiceOption input {
+  width: 16px;
+  max-width: 16px;
+  min-height: 16px;
+  padding: 0;
+  flex-shrink: 0;
+}
+.voiceHelp {
+  font-size: 10px;
+  color: var(--muted);
+  padding: 0 12px 8px;
+  line-height: 1.6;
+}
+.voiceStatus,
+.voicePlayback {
+  margin: 5px;
+  padding: 10px 12px;
+  background: #edf3e5;
+  border-radius: 10px;
+  font-size: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 12px;
+  align-items: center;
+}
+.voiceStatus > span,
+.voicePlayback > span {
+  flex: 1;
+  min-width: 160px;
+}
+.voiceStatus button,
+.voicePlayback button {
+  min-height: 36px;
+  padding: 6px 8px;
+  font-size: 11px;
+}
+.voicePlayback > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.voicePlayback small {
+  flex-basis: 100%;
+  font-size: 10px;
+}
 .adminContent {
   overflow-y: auto;
   padding: 24px;

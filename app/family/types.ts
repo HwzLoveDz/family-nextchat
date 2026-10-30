@@ -80,6 +80,16 @@ export interface FamilyAdminUser extends FamilyUser {
   inputTokens: number;
   outputTokens: number;
   unknownUsageRequests: number;
+  voiceRequests?: number;
+  voiceInputTokens?: number;
+  voiceOutputTokens?: number;
+  voiceUnknownUsageRequests?: number;
+  /** Measured canonical PCM duration; this is not a billable quantity. */
+  voiceAudioSeconds?: number;
+}
+export interface FamilyVoiceTranscription {
+  text: string;
+  usage: FamilyUsage;
 }
 export type FamilyStreamEvent =
   | {

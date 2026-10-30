@@ -377,6 +377,10 @@ describe("family deployment security boundaries", () => {
     expect(csp).toContain("frame-ancestors 'none'");
     expect(csp).toContain("object-src 'none'");
     expect(csp).toContain("worker-src 'self'");
+    expect(csp).toContain("media-src 'self' blob:");
+    expect(first.headers.get("Permissions-Policy")).toBe(
+      "camera=(), microphone=(self), geolocation=()",
+    );
     expect(csp).not.toContain("'unsafe-eval'");
     expect(csp).not.toContain("script-src 'self' 'unsafe-inline'");
     expect(
@@ -387,6 +391,12 @@ describe("family deployment security boundaries", () => {
       const response = middleware(request(path, "POST"));
       expect(response.headers.get("x-middleware-next")).toBe("1");
       expect(response.headers.get("Cache-Control")).toContain("no-store");
+      expect(response.headers.get("Permissions-Policy")).toBe(
+        "camera=(), microphone=(), geolocation=()",
+      );
+      expect(response.headers.get("Content-Security-Policy")).toContain(
+        "default-src 'none'",
+      );
     }
   });
 

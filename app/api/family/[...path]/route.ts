@@ -24,6 +24,7 @@ import { modelCatalog } from "@/app/family/server/models";
 import {
   ensureFamilyApplicationUpgrade,
   requireFamilyApplicationUpgrade,
+  FAMILY_APPLICATION_SCHEMA_VERSION,
 } from "@/app/family/server/upgrades";
 import {
   assertSameOrigin,
@@ -86,7 +87,9 @@ async function handle(
       await rateLimit(request, "admin:migrate", 5, 60, userId);
       await ensureFamilyApplicationUpgrade();
       await audit(userId, "schema.upgrade");
-      return finish(json({ ok: true, schemaVersion: 2 }));
+      return finish(
+        json({ ok: true, schemaVersion: FAMILY_APPLICATION_SCHEMA_VERSION }),
+      );
     }
     if (
       path[0] === "chats" ||
@@ -155,8 +158,10 @@ async function handle(
         ),
       );
     if (path[0] === "admin") {
-      if (method === "GET" && joined === "admin/users")
+      if (method === "GET" && joined === "admin/users") {
+        await requireFamilyApplicationUpgrade();
         return finish(json({ users: await listUsers() }));
+      }
       if (method === "POST" && joined === "admin/invites")
         return finish(
           json(await createInvite(userId, await bodyJson(request, 1024))),
