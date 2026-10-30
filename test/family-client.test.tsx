@@ -7,6 +7,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { FamilyApp } from "../app/family/client";
 import type { FamilyChatDetail, FamilyUser } from "../app/family/types";
@@ -588,7 +589,7 @@ describe("family client account isolation", () => {
     ).not.toBeInTheDocument();
   });
 
-  test("administrator can read a conversation that is visibly marked archived", async () => {
+  test("administrator renders account statistics and archived chats without the removed monitoring copy", async () => {
     identity = { ...memberA, role: "admin" };
     const baseHandler = requestHandler;
     requestHandler = async (path, init) => {
@@ -599,33 +600,57 @@ describe("family client account isolation", () => {
               ...memberB,
               createdAt: "2026-10-30T00:00:00Z",
               lastSeenAt: null,
-              activeSeconds: 0,
-              inputTokens: 0,
-              outputTokens: 0,
-              unknownUsageRequests: 0,
+              activeSeconds: 120,
+              inputTokens: 969,
+              outputTokens: 979,
+              unknownUsageRequests: 3,
             },
           ],
         });
       if (path === `/api/family/admin/users/${memberB.id}/chats`)
         return json({ chats: [{ ...chat("a"), archived: true }] });
       if (path === "/api/family/admin/chats/a") {
-        const record = detail("归档保留的完整回复");
+        const record = detail("合成归档聊天的完整回复");
         return json({ ...record, chat: { ...record.chat, archived: true } });
       }
       return baseHandler(path, init);
     };
-    render(<FamilyApp />);
+    const { container } = render(<FamilyApp />);
+    const expectMonitoringCopyAbsent = () => {
+      const rendered = (container.textContent ?? "").replace(/\s+/g, "");
+      for (const removed of [
+        "管理员可查看聊天记录与用量",
+        "管理员可查看账号、聊天内容、模型回复、用量和前台活跃时长估算。",
+        "仅统计前台可见且最近有操作的活跃时长，属于估算。",
+      ])
+        expect(rendered).not.toContain(removed);
+    };
     fireEvent.click(
       await screen.findByRole("button", { name: "账户与用量管理" }),
     );
+    const account = (await screen.findByText(memberB.email)).closest("article");
+    expect(account).not.toBeNull();
+    expect(within(account!).getByText(memberB.name)).toBeInTheDocument();
+    expect(within(account!).getByText("活跃时长（估算）")).toBeInTheDocument();
+    expect(within(account!).getByText("2 分钟")).toBeInTheDocument();
+    expect(within(account!).getByText("969 / 979")).toBeInTheDocument();
+    expect(within(account!).getByText("3")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "刷新统计" })).toBeEnabled();
+    expect(
+      within(account!).getByRole("button", { name: "查看完整聊天" }),
+    ).toBeEnabled();
+    expectMonitoringCopyAbsent();
     fireEvent.click(
       await screen.findByRole("button", { name: "查看完整聊天" }),
     );
     fireEvent.click(
       await screen.findByRole("button", { name: /聊天 a · 已归档/ }),
     );
-    expect(await screen.findByText("归档保留的完整回复")).toBeInTheDocument();
+    expect(
+      await screen.findByText("合成归档聊天的完整回复"),
+    ).toBeInTheDocument();
     expect(screen.getByText("已归档")).toBeInTheDocument();
+    expectMonitoringCopyAbsent();
   });
 
   test.each(["approved", "pending"] as const)(

@@ -2134,7 +2134,6 @@ export function FamilyApp() {
                 </p>
               </section>
               <div className={styles.adminToolbar}>
-                <p>仅统计前台可见且最近有操作的活跃时长，属于估算。</p>
                 <div>
                   <button
                     disabled={working}
@@ -2222,7 +2221,7 @@ export function FamilyApp() {
                     </div>
                     <p>{account.email}</p>
                     <dl>
-                      <dt>前台活跃估算</dt>
+                      <dt>活跃时长（估算）</dt>
                       <dd>{durationText(account.activeSeconds)}</dd>
                       <dt>已报告输入 / 输出 token</dt>
                       <dd>
