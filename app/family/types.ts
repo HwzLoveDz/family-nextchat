@@ -50,12 +50,31 @@ export interface FamilyMessage {
   requestedModel?: string | null;
   model?: string | null;
   superseded?: boolean;
+  attachments?: FamilyAttachmentMeta[];
+}
+export interface FamilyAttachmentInput {
+  name: string;
+  mediaType: string;
+  /** Canonical base64 bytes, without a data: URL prefix. */
+  dataBase64: string;
+}
+export interface FamilyAttachmentMeta {
+  id: string;
+  name: string;
+  kind: "image" | "text" | "pdf";
+  mediaType: string;
+  byteSize: number;
+  width?: number;
+  height?: number;
+  pages?: number;
 }
 export interface FamilyModel {
   id: string;
   name: string;
   description: string;
   reasoning: boolean;
+  supportsImages?: boolean;
+  supportsPdf?: boolean;
 }
 export interface FamilyModelCatalog {
   models: FamilyModel[];
@@ -65,9 +84,24 @@ export type FamilyMessageRequest = {
   requestId: string;
   model?: string;
 } & (
-  | { mode?: "send"; content: string; sourceMessageId?: never }
-  | { mode: "edit"; content: string; sourceMessageId: string }
-  | { mode: "retry" | "regenerate"; content?: never; sourceMessageId: string }
+  | {
+      mode?: "send";
+      content: string;
+      sourceMessageId?: never;
+      attachments?: FamilyAttachmentInput[];
+    }
+  | {
+      mode: "edit";
+      content: string;
+      sourceMessageId: string;
+      attachments?: never;
+    }
+  | {
+      mode: "retry" | "regenerate";
+      content?: never;
+      sourceMessageId: string;
+      attachments?: never;
+    }
 );
 export interface FamilyChatDetail {
   chat: FamilyChat;

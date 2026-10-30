@@ -32,6 +32,19 @@ import {
 } from "./client-cleanup";
 import styles from "./family.module.scss";
 import { useFamilyVoice, type VoiceScope } from "./use-family-voice";
+import { useFamilyViewport } from "./use-family-viewport";
+import {
+  AttachmentComposer,
+  MessageAttachments,
+  useDraftAttachments,
+  type AttachmentScope,
+} from "./attachments";
+import {
+  attachmentModelError,
+  attachmentSize,
+  ATTACHMENT_LIMITS,
+  encodeAttachmentInputs,
+} from "./attachment-browser";
 
 type Screen =
   | "loading"
@@ -103,6 +116,20 @@ function markdownExport(detail: FamilyChatDetail) {
       "",
       message.content,
       "",
+      ...(message.attachments?.length
+        ? [
+            "附件信息（文件内容未打包）：",
+            ...message.attachments.map(
+              (attachment) =>
+                `- ${attachment.name
+                  .replace(/[\r\n]/g, " ")
+                  .replace(/[\\`*_\[\]{}()#+!|>-]/g, "\\$&")} · ${
+                  attachment.mediaType
+                } · ${attachmentSize(attachment.byteSize)}`,
+            ),
+            "",
+          ]
+        : []),
       ...(message.role === "assistant"
         ? [modelText(message), usageText(message.usage), ""]
         : []),
@@ -118,6 +145,9 @@ const MessageBody = memo(function MessageBody({
   copied = false,
   onSpeak,
   speechDisabled = false,
+  attachmentScope,
+  attachmentAdmin = false,
+  onAttachmentUnauthorized = () => {},
 }: {
   message: FamilyMessage;
   userLabel?: string;
@@ -125,6 +155,9 @@ const MessageBody = memo(function MessageBody({
   copied?: boolean;
   onSpeak?: (message: FamilyMessage) => void;
   speechDisabled?: boolean;
+  attachmentScope?: AttachmentScope;
+  attachmentAdmin?: boolean;
+  onAttachmentUnauthorized?: () => void;
 }) {
   return (
     <article
@@ -178,9 +211,21 @@ const MessageBody = memo(function MessageBody({
             {message.content}
           </ReactMarkdown>
         ) : (
-          <span className={styles.muted}>等待回复…</span>
+          <span className={styles.muted}>
+            {message.role === "user" && message.attachments?.length
+              ? "已发送附件"
+              : "等待回复…"}
+          </span>
         )}
       </div>
+      {attachmentScope ? (
+        <MessageAttachments
+          attachments={message.attachments}
+          scope={attachmentScope}
+          admin={attachmentAdmin}
+          onUnauthorized={onAttachmentUnauthorized}
+        />
+      ) : null}
       {message.role === "assistant" && message.status !== "streaming" ? (
         <div className={styles.messageFoot}>
           {message.status === "partial"
@@ -262,6 +307,7 @@ async function consumeEvents(
 }
 
 export function FamilyApp() {
+  useFamilyViewport();
   const [screen, setScreen] = useState<Screen>("loading");
   const [status, setStatus] = useState<FamilySiteStatus | null>(null);
   const [user, setUser] = useState<FamilyUser | null>(null);
@@ -336,6 +382,19 @@ export function FamilyApp() {
   const composerInput = useRef<HTMLTextAreaElement>(null);
   const downloadUrls = useRef(new Set<string>());
   const downloadTimers = useRef(new Set<number>());
+  const attachmentReset = useRef<() => void>(() => {});
+  const attachmentEpoch = epoch.current;
+  const attachmentOwner = currentUser.current?.id;
+  const draftAttachments = useDraftAttachments(
+    {
+      key: `${attachmentEpoch}:${attachmentOwner}:${selectedChat}`,
+      isCurrent: () =>
+        attachmentEpoch === epoch.current &&
+        attachmentOwner === currentUser.current?.id,
+    },
+    (message) => setError(message),
+  );
+  attachmentReset.current = draftAttachments.clear;
   const voiceReset = useRef<() => void>(() => {});
   const voiceSubmit = useRef<
     (text: string, scope: VoiceScope) => void | Promise<void>
@@ -353,6 +412,7 @@ export function FamilyApp() {
       canRecord:
         screen === "chat" &&
         !draft.trim() &&
+        !draftAttachments.hasAny() &&
         !editingMessage &&
         !sending &&
         !cancelPending &&
@@ -417,6 +477,7 @@ export function FamilyApp() {
 
   const clearPrivate = useCallback((preserveInvite = false) => {
     epoch.current += 1;
+    attachmentReset.current();
     voiceReset.current();
     listVersion.current += 1;
     adminVersion.current += 1;
@@ -606,6 +667,7 @@ export function FamilyApp() {
     return () => {
       active = false;
       epoch.current += 1;
+      attachmentReset.current();
       voiceReset.current();
       controllers.current.forEach((controller) => controller.abort());
       controllers.current.clear();
@@ -811,6 +873,7 @@ export function FamilyApp() {
   };
 
   const selectChat = async (id: string) => {
+    attachmentReset.current();
     voiceReset.current();
     const version = ++listVersion.current;
     const generation = epoch.current;
@@ -929,8 +992,12 @@ export function FamilyApp() {
     voiceOrigin = false,
   ) => {
     const content = (contentOverride ?? draft).trim();
+    const hasDraftFiles = mode === "send" && draftAttachments.hasAny();
     if (
-      ((mode === "send" || mode === "edit") && !content) ||
+      (mode === "send" && !content && !hasDraftFiles) ||
+      (mode === "edit" && !content) ||
+      draftAttachments.preparing ||
+      (mode === "send" && draftAttachments.hasErrors) ||
       sending ||
       checking ||
       detailLoading ||
@@ -950,6 +1017,17 @@ export function FamilyApp() {
       setError("请先选择一个可用模型。");
       return;
     }
+    const capabilityError =
+      mode === "send"
+        ? attachmentModelError(
+            draftAttachments.items,
+            models.find((model) => model.id === selectedModel),
+          )
+        : "";
+    if (capabilityError) {
+      setError(capabilityError);
+      return;
+    }
     if (mode !== "send" && (!selectedChat || !sourceMessageId)) return;
     const generation = epoch.current;
     const controller = new AbortController();
@@ -967,6 +1045,14 @@ export function FamilyApp() {
     let accepted = false;
     let completedReply: FamilyMessage | null = null;
     try {
+      const attachments =
+        mode === "send"
+          ? await encodeAttachmentInputs(
+              draftAttachments.snapshot(),
+              controller.signal,
+            )
+          : [];
+      if (generation !== epoch.current) throw new StaleRequest();
       if (!chatId) {
         const data = await request<{ chat: FamilyChat }>("/api/family/chats", {
           method: "POST",
@@ -989,7 +1075,13 @@ export function FamilyApp() {
       if (mode === "send")
         setMessages((previous) => [
           ...previous,
-          { id: userId, role: "user", content, status: "complete", createdAt },
+          {
+            id: userId,
+            role: "user",
+            content: content || "附件消息",
+            status: "complete",
+            createdAt,
+          },
           {
             id: optimisticAssistantId,
             role: "assistant",
@@ -1001,7 +1093,12 @@ export function FamilyApp() {
       if (mode === "send" || mode === "edit") setDraft("");
       const payload: FamilyMessageRequest =
         mode === "send"
-          ? { content, requestId, model: selectedModel }
+          ? {
+              content,
+              requestId,
+              model: selectedModel,
+              ...(attachments.length ? { attachments } : {}),
+            }
           : mode === "edit"
           ? {
               content,
@@ -1016,6 +1113,9 @@ export function FamilyApp() {
               mode,
               sourceMessageId: sourceMessageId!,
             };
+      const serialized = JSON.stringify(payload);
+      if (new Blob([serialized]).size >= ATTACHMENT_LIMITS.wireBytes)
+        throw new Error("消息与附件合计过大，请移除部分附件后重试。");
       const response = await fetch(
         `/api/family/chats/${encodeURIComponent(chatId)}/messages`,
         {
@@ -1027,7 +1127,7 @@ export function FamilyApp() {
             "Content-Type": "application/json",
             Accept: "text/event-stream",
           },
-          body: JSON.stringify(payload),
+          body: serialized,
         },
       );
       if (generation !== epoch.current) throw new StaleRequest();
@@ -1045,6 +1145,7 @@ export function FamilyApp() {
         if (generation !== epoch.current) return;
         if (streamEvent.type === "start") {
           accepted = true;
+          if (mode === "send") draftAttachments.clear();
           const previousAssistantId = assistantId;
           assistantId = streamEvent.assistantMessage.id;
           activeGeneration.current = {
@@ -1106,7 +1207,7 @@ export function FamilyApp() {
         activeGeneration.current?.controller === controller &&
         (activeGeneration.current.cancelAcknowledged ||
           activeGeneration.current.alreadyComplete);
-      if (rejectedBeforeStream) {
+      if (rejectedBeforeStream || !accepted) {
         setMessages((previous) =>
           previous.filter(
             (message) =>
@@ -1201,7 +1302,8 @@ export function FamilyApp() {
       scope.chatId !== selectedChatRef.current ||
       scope.model !== selectedModel ||
       !identityVerified.current ||
-      draft.trim()
+      draft.trim() ||
+      draftAttachments.hasAny()
     )
       return;
     await generateMessage("send", undefined, text, true);
@@ -1334,6 +1436,25 @@ export function FamilyApp() {
     chat.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
   );
   const chosenModel = models.find((model) => model.id === selectedModel);
+  const attachmentError = attachmentModelError(
+    draftAttachments.items,
+    chosenModel,
+  );
+  const attachmentReadScope = (
+    chatId: string | null,
+    admin = false,
+  ): AttachmentScope => ({
+    key: `${attachmentEpoch}:${attachmentOwner}:${
+      admin ? "admin" : "owner"
+    }:${chatId}`,
+    isCurrent: () =>
+      attachmentEpoch === epoch.current &&
+      attachmentOwner === currentUser.current?.id &&
+      identityVerified.current &&
+      (admin
+        ? currentUser.current?.role === "admin"
+        : selectedChatRef.current === chatId),
+  });
   const lastUserMessage = [...messages]
     .reverse()
     .find((message) => message.role === "user" && !message.superseded);
@@ -1345,6 +1466,7 @@ export function FamilyApp() {
     working ||
     cancelPending ||
     voice.busy ||
+    draftAttachments.preparing ||
     detailLoading ||
     lastAssistantMessage?.status === "streaming";
 
@@ -1566,7 +1688,7 @@ export function FamilyApp() {
           <h1>{user.role === "admin" ? "更新聊天功能" : "服务正在升级"}</h1>
           <p className={styles.subtitle}>
             {user.role === "admin"
-              ? "更新后即可使用语音聊天。账号和已有聊天会保留。"
+              ? "更新后即可发送图片和附件。"
               : "请等待管理员更新聊天功能，稍后再来。"}
           </p>
           {error ? (
@@ -1620,12 +1742,15 @@ export function FamilyApp() {
             </button>
           </div>
           <button
-            disabled={sending || working || voice.busy}
+            disabled={
+              sending || working || voice.busy || draftAttachments.preparing
+            }
             onClick={() => {
               ++listVersion.current;
               setScreen("chat");
               setSelectedChat(null);
               voiceReset.current();
+              attachmentReset.current();
               selectedChatRef.current = null;
               setActiveChat(null);
               setSelectedModel(defaultModel.current);
@@ -1673,7 +1798,12 @@ export function FamilyApp() {
                       ? styles.activeChat
                       : ""
                   }
-                  disabled={sending || working || voice.busy}
+                  disabled={
+                    sending ||
+                    working ||
+                    voice.busy ||
+                    draftAttachments.preparing
+                  }
                   onClick={() => {
                     setScreen("chat");
                     void run(() => selectChat(chat.id));
@@ -1698,7 +1828,9 @@ export function FamilyApp() {
             {user.role === "admin" ? (
               <button
                 className={styles.secondary}
-                disabled={sending || working || voice.busy}
+                disabled={
+                  sending || working || voice.busy || draftAttachments.preparing
+                }
                 onClick={() => void run(openAdmin)}
               >
                 账户与用量管理
@@ -1768,6 +1900,7 @@ export function FamilyApp() {
                     detailLoading ||
                     modelLoading ||
                     voice.busy ||
+                    draftAttachments.preparing ||
                     models.length === 0
                   }
                   onChange={(event) =>
@@ -1931,6 +2064,7 @@ export function FamilyApp() {
                       ++listVersion.current;
                       setSelectedChat(null);
                       voiceReset.current();
+                      attachmentReset.current();
                       selectedChatRef.current = null;
                       setActiveChat(null);
                       setEditingMessage(null);
@@ -2169,6 +2303,14 @@ export function FamilyApp() {
                             key={message.id}
                             message={message}
                             userLabel={adminSelectedUser.name}
+                            attachmentScope={attachmentReadScope(
+                              adminDetail.chat.id,
+                              true,
+                            )}
+                            attachmentAdmin
+                            onAttachmentUnauthorized={() =>
+                              void checkIdentity()
+                            }
                           />
                         ))
                       ) : (
@@ -2204,6 +2346,8 @@ export function FamilyApp() {
                           message={message}
                           onCopy={copyMessage}
                           copied={copiedMessage === message.id}
+                          attachmentScope={attachmentReadScope(selectedChat)}
+                          onAttachmentUnauthorized={() => void checkIdentity()}
                           onSpeak={(reply) => {
                             if (selectedChat)
                               void voice.speak(selectedChat, reply);
@@ -2381,6 +2525,21 @@ export function FamilyApp() {
                     </button>
                   </div>
                 ) : null}
+                <AttachmentComposer
+                  items={draftAttachments.items}
+                  disabled={
+                    sending ||
+                    cancelPending ||
+                    working ||
+                    checking ||
+                    detailLoading ||
+                    voice.busy
+                  }
+                  editing={!!editingMessage}
+                  error={attachmentError}
+                  onFiles={(files) => void draftAttachments.addFiles(files)}
+                  onRemove={draftAttachments.remove}
+                />
                 <label className={styles.srOnly} htmlFor="family-message">
                   发送消息
                 </label>
@@ -2390,7 +2549,7 @@ export function FamilyApp() {
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
                   placeholder={editingMessage ? "修改上一条提问…" : "输入消息…"}
-                  rows={3}
+                  rows={2}
                   maxLength={12000}
                   disabled={
                     sending ||
@@ -2437,6 +2596,7 @@ export function FamilyApp() {
                       (voice.phase === "idle" &&
                         (!voice.supported ||
                           !!draft.trim() ||
+                          draftAttachments.hasAny() ||
                           !!editingMessage ||
                           sending ||
                           cancelPending ||
@@ -2558,8 +2718,8 @@ export function FamilyApp() {
                   </label>
                 </div>
                 <p id="family-voice-help" className={styles.voiceHelp}>
-                  {draft.trim()
-                    ? "输入框有未发送文字，请先发送或清空后再录音。"
+                  {draft.trim() || draftAttachments.hasAny()
+                    ? "有未发送的文字或附件，请先发送或清空后再录音。"
                     : !voice.supported
                     ? "此浏览器暂不支持录音；仍可使用文字聊天。"
                     : "松开发送，移出取消。最长 45 秒自动结束，仅发送前 45 秒；首次允许麦克风后请重新录音。"}
@@ -2587,7 +2747,11 @@ export function FamilyApp() {
                     <button
                       type="submit"
                       disabled={
-                        !draft.trim() ||
+                        (!draft.trim() &&
+                          (!!editingMessage || !draftAttachments.hasAny())) ||
+                        draftAttachments.preparing ||
+                        (!editingMessage &&
+                          (draftAttachments.hasErrors || !!attachmentError)) ||
                         checking ||
                         working ||
                         detailLoading ||

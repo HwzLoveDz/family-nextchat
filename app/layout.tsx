@@ -16,7 +16,7 @@ export const metadata: Metadata = {
     ? "家人专用的 AI 助手。"
     : "Your personal AI assistant.",
   appleWebApp: {
-    title: "NextChat",
+    title: isFamilyMode() ? "Harvey 家庭 AI" : "NextChat",
     statusBarStyle: "default",
   },
 };
@@ -24,6 +24,12 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
+  ...(isFamilyMode()
+    ? {
+        viewportFit: "cover" as const,
+        interactiveWidget: "resizes-content" as const,
+      }
+    : {}),
   themeColor: [
     { media: "(prefers-color-scheme: light)", color: "#fafafa" },
     { media: "(prefers-color-scheme: dark)", color: "#151515" },
@@ -56,7 +62,7 @@ export default async function RootLayout({
           </>
         )}
       </head>
-      <body>
+      <body style={familyMode ? { touchAction: "auto" } : undefined}>
         {children}
         {serverConfig?.isVercel && (
           <>

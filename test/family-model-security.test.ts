@@ -125,7 +125,7 @@ describe("family application upgrade boundaries", () => {
   test("a version marker cannot enable requests without the required application columns", async () => {
     poolQuery
       .mockResolvedValueOnce(readyMetadata(false))
-      .mockResolvedValueOnce(result([{ version: 3 }]));
+      .mockResolvedValueOnce(result([{ version: 4 }]));
     await expect(
       upgrades.requireFamilyApplicationUpgrade(),
     ).rejects.toBeInstanceOf(FamilyApiError);
@@ -133,13 +133,13 @@ describe("family application upgrade boundaries", () => {
       poolQuery.mock.calls.every(([sql]) => /^SELECT\b/.test(sql.trim())),
     ).toBe(true);
     expect(clientQuery).not.toHaveBeenCalled();
-    expect(poolQuery.mock.calls[0][0]).toContain("count(*) = 23");
+    expect(poolQuery.mock.calls[0][0]).toContain("count(*) = 41");
     expect(poolQuery.mock.calls[0][0]).toContain(
       "('family_generation','cancel_requested_at','timestamp with time zone','YES')",
     );
   });
 
-  test.each([undefined, 0, 1, 2, "3", -1])(
+  test.each([undefined, 0, 1, 2, 3, "4", -1])(
     "missing, old, or invalid version %p cannot pass readiness",
     async (version) => {
       poolQuery
@@ -155,10 +155,10 @@ describe("family application upgrade boundaries", () => {
     },
   );
 
-  test("a complete v3 schema is accepted through SELECTs alone", async () => {
+  test("a complete v4 schema is accepted through SELECTs alone", async () => {
     poolQuery
       .mockResolvedValueOnce(readyMetadata())
-      .mockResolvedValueOnce(result([{ version: 3 }]));
+      .mockResolvedValueOnce(result([{ version: 4 }]));
     await expect(
       upgrades.requireFamilyApplicationUpgrade(),
     ).resolves.toBeUndefined();
@@ -292,6 +292,8 @@ describe("family application upgrade boundaries", () => {
         "id",
         "name",
         "reasoning",
+        "supportsImages",
+        "supportsPdf",
       ]);
     expect(poolOptions).toHaveLength(0);
     expect(poolQuery).not.toHaveBeenCalled();
@@ -401,10 +403,11 @@ describe("family application upgrade boundaries", () => {
         expect(values).toEqual([chatId, userId]);
         return result([chatRow()]);
       }
-      if (sql.startsWith("SELECT * FROM family_generation")) {
+      if (sql.startsWith("SELECT *,EXISTS(SELECT 1 FROM family_message")) {
         expect(values).toEqual([userId, requestId]);
         return result(options.existing ? [options.existing] : []);
       }
+      if (sql.startsWith("SELECT l.message_id,a.id")) return result();
       if (sql.startsWith("SELECT m.*,g.model AS requested_model"))
         return result([
           {

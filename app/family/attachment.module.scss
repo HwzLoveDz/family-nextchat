@@ -1,0 +1,163 @@
+.composer {
+  padding: 5px 10px 2px;
+}
+.composer .fileInput {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.pickerRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.pickerRow small {
+  font-size: 11px;
+  color: var(--muted, #687a73);
+}
+.composer .pickButton {
+  min-height: 44px;
+  padding: 7px 11px;
+  background: #eef3e8;
+  border: 1px solid #d6e1cd;
+  color: var(--accent, #316451);
+  font-size: 12px;
+}
+.draftList,
+.savedList {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  display: grid;
+  gap: 7px;
+}
+.draftItem,
+.savedItem {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid #dde6d5;
+  border-radius: 10px;
+  background: #f4f6ef;
+}
+.draftItem > img {
+  width: 52px;
+  height: 52px;
+  object-fit: cover;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+.draftItem > div,
+.savedInfo {
+  min-width: 0;
+  flex: 1;
+}
+.draftItem strong,
+.savedInfo strong {
+  font-size: 12px;
+  font-weight: 550;
+  overflow-wrap: anywhere;
+  display: block;
+}
+.draftItem small,
+.savedInfo small {
+  display: block;
+  color: var(--muted, #687a73);
+  font-size: 10px;
+}
+.composer .removeButton {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 5px 8px;
+  color: #876348;
+  background: transparent;
+  font-size: 11px;
+}
+.fileBadge {
+  width: 45px;
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  background: #e8efdf;
+  border-radius: 7px;
+  color: #607a50;
+  font-size: 11px;
+}
+.error {
+  color: #963f32;
+  font-size: 11px;
+  margin: 5px 0 0;
+  overflow-wrap: anywhere;
+}
+.savedItem .thumbnail {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  width: 80px;
+  height: 70px;
+  min-height: 0;
+  border-radius: 7px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.thumbnail img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.expanded {
+  flex-wrap: wrap;
+}
+.savedItem.expanded .thumbnail {
+  width: 100%;
+  height: auto;
+}
+.expanded .thumbnail img {
+  height: auto;
+  max-height: 65dvh;
+  object-fit: contain;
+}
+.fileActions {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.fileActions button {
+  padding: 5px 8px;
+  min-height: 44px;
+  font-size: 10px;
+  background: #fffefa;
+  border: 1px solid #d6e1cd;
+  color: var(--accent, #316451);
+  white-space: nowrap;
+}
+@media (max-width: 768px) {
+  .composer {
+    padding: 3px 7px;
+  }
+  .pickerRow {
+    gap: 5px;
+  }
+  .pickerRow small {
+    font-size: 10px;
+  }
+  .savedItem {
+    gap: 7px;
+    padding: 7px;
+  }
+  .savedItem .thumbnail {
+    width: 65px;
+    height: 58px;
+  }
+  .draftList {
+    max-height: 170px;
+    overflow-y: auto;
+  }
+}

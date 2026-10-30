@@ -7,6 +7,16 @@ import { FamilyApiError, digest, text } from "./errors";
 import { PRIVATE_API_HEADERS } from "../enabled";
 import { OpenAIStreamDecoder } from "./openai-stream";
 import { allowedModel, completionBody, modelCatalog } from "./models";
+import {
+  prepareAttachments,
+  loadMessageAttachments,
+  storeAttachments,
+  inheritAttachments,
+  attachmentHistory,
+  type PreparedAttachment,
+  type CompletionMessage,
+  type SavedAttachment,
+} from "./attachments";
 import type {
   FamilyChat,
   FamilyChatDetail,
@@ -58,6 +68,7 @@ function messageJson(row: Record<string, any>): FamilyMessage {
     requestedModel: row.requested_model ?? null,
     model: row.actual_model ?? null,
     superseded: !!row.superseded_at,
+    ...(row.attachments?.length ? { attachments: row.attachments } : {}),
     ...(row.role === "assistant" ? { usage: usageJson(row) } : {}),
   };
 }
@@ -149,9 +160,20 @@ export async function chatDetail(
       " ORDER BY m.position LIMIT 400",
     [chatId],
   );
+  const attachments = await loadMessageAttachments(
+    getPool(),
+    messages.rows.filter((row) => row.role === "user").map((row) => row.id),
+  );
   return {
     chat: chatJson(result.rows[0]),
-    messages: messages.rows.map(messageJson),
+    messages: messages.rows.map((row) =>
+      messageJson({
+        ...row,
+        attachments: attachments
+          .get(row.id)
+          ?.map(({ data, textContent, textCharacters, ...meta }) => meta),
+      }),
+    ),
   };
 }
 export async function deleteChat(chatId: string, userId: string) {
@@ -184,7 +206,7 @@ interface GenerationStart {
   assistantId: string;
   userMessage: FamilyMessage;
   assistantMessage: FamilyMessage;
-  history: { role: "user" | "assistant"; content: string }[];
+  history: CompletionMessage[];
   replay?: boolean;
   usage?: FamilyUsage;
   model: FamilyModel;
@@ -227,6 +249,7 @@ interface GenerationIntent {
   content: string | null;
   sourceMessageId: string | null;
   requestedModel?: string;
+  attachments: PreparedAttachment[];
 }
 function generationIntent(body: Record<string, unknown>): GenerationIntent {
   const mode = body.mode === undefined ? "send" : body.mode;
@@ -243,14 +266,25 @@ function generationIntent(body: Record<string, unknown>): GenerationIntent {
   if (
     Object.keys(body).some(
       (key) =>
-        !["content", "requestId", "model", "mode", "sourceMessageId"].includes(
-          key,
-        ),
+        ![
+          "content",
+          "requestId",
+          "model",
+          "mode",
+          "sourceMessageId",
+          "attachments",
+        ].includes(key),
     )
   )
     throw new FamilyApiError(
       400,
       "消息参数无效。",
+      "INVALID_MESSAGE_PARAMETERS",
+    );
+  if (mode !== "send" && body.attachments !== undefined)
+    throw new FamilyApiError(
+      400,
+      "此操作保留原附件，不能指定新附件。",
       "INVALID_MESSAGE_PARAMETERS",
     );
   if (mode === "send" && body.sourceMessageId !== undefined)
@@ -272,10 +306,17 @@ function generationIntent(body: Record<string, unknown>): GenerationIntent {
     mode: mode as GenerationMode,
     content:
       mode === "send" || mode === "edit"
-        ? text(body.content, 12_000, "消息")
+        ? mode === "send" &&
+          Array.isArray(body.attachments) &&
+          body.attachments.length > 0 &&
+          (body.content === undefined ||
+            (typeof body.content === "string" && !body.content.trim()))
+          ? "请分析这些附件。"
+          : text(body.content, 12_000, "消息")
         : null,
     sourceMessageId,
     requestedModel: body.model as string | undefined,
+    attachments: [],
   };
 }
 function intentHash(chatId: string, intent: GenerationIntent, model: string) {
@@ -286,6 +327,13 @@ function intentHash(chatId: string, intent: GenerationIntent, model: string) {
       model,
       mode: intent.mode,
       sourceMessageId: intent.sourceMessageId,
+      ...(intent.attachments.length
+        ? {
+            attachments: intent.attachments.map(
+              (file) => file.inputFingerprint,
+            ),
+          }
+        : {}),
     }),
   );
 }
@@ -306,7 +354,7 @@ async function prepare(
   if (!owner.rowCount) throw new FamilyApiError(404, "对话不存在。");
   const existing = (
     await client.query(
-      "SELECT * FROM family_generation WHERE user_id=$1 AND request_id=$2",
+      "SELECT *,EXISTS(SELECT 1 FROM family_message m JOIN family_message_attachment l ON l.message_id=m.id WHERE m.generation_id=family_generation.id) AS has_attachments FROM family_generation WHERE user_id=$1 AND request_id=$2",
       [userId, requestId],
     )
   ).rows[0];
@@ -316,11 +364,16 @@ async function prepare(
     const legacy =
       intent.mode === "send" &&
       !intent.sourceMessageId &&
+      !intent.attachments.length &&
+      !existing.has_attachments &&
       requested === existing.model &&
       existing.request_hash ===
         digest(JSON.stringify({ chatId, content: intent.content }));
     if (
       existing.chat_id !== chatId ||
+      (intent.mode === "send" &&
+        !intent.attachments.length &&
+        existing.has_attachments) ||
       (existing.request_hash !== expected && !legacy)
     )
       throw new FamilyApiError(
@@ -346,6 +399,10 @@ async function prepare(
         [existing.id],
       )
     ).rows;
+    const metadata = await loadMessageAttachments(
+      client,
+      messages.filter((row) => row.role === "user").map((row) => row.id),
+    );
     const replaced = existing.source_generation_id
       ? (
           await client.query(
@@ -357,7 +414,12 @@ async function prepare(
     return {
       id: existing.id,
       assistantId: messages[1].id,
-      userMessage: messageJson(messages[0]),
+      userMessage: messageJson({
+        ...messages[0],
+        attachments: metadata
+          .get(messages[0].id)
+          ?.map(({ data, textContent, textCharacters, ...meta }) => meta),
+      }),
       assistantMessage: messageJson(messages[1]),
       history: [],
       replay: true,
@@ -398,6 +460,7 @@ async function prepare(
     );
   let content = intent.content!;
   let sourceGeneration: string | null = null;
+  let sourceUserMessage: string | null = null;
   let replacedMessageIds: string[] | undefined;
   if (intent.mode !== "send") {
     const source = (
@@ -442,6 +505,7 @@ async function prepare(
         "RETRY_REQUIRES_FAILURE",
       );
     sourceGeneration = last.id;
+    sourceUserMessage = last.user_message_id;
     replacedMessageIds = [last.user_message_id, last.assistant_message_id];
     if (intent.mode !== "edit") content = last.user_content;
   }
@@ -453,18 +517,25 @@ async function prepare(
     throw new FamilyApiError(400, "这段对话已较长，请新建对话。");
   const previous = (
     await client.query(
-      "SELECT m.role,m.content FROM family_message m JOIN family_generation g ON g.id=m.generation_id WHERE m.chat_id=$1 AND g.state='complete' AND m.status='complete' AND g.superseded_at IS NULL AND ($2::uuid IS NULL OR g.id<>$2) ORDER BY m.position DESC LIMIT 40",
+      "SELECT m.id,m.generation_id,m.role,m.content FROM family_message m JOIN family_generation g ON g.id=m.generation_id WHERE m.chat_id=$1 AND g.state='complete' AND m.status='complete' AND g.superseded_at IS NULL AND ($2::uuid IS NULL OR g.id<>$2) ORDER BY m.position DESC LIMIT 40",
       [chatId, sourceGeneration],
     )
   ).rows;
-  let chars = content.length;
-  const history: GenerationStart["history"] = [];
-  for (const row of previous) {
-    if (chars + row.content.length > 48_000) break;
-    chars += row.content.length;
-    history.unshift({ role: row.role, content: row.content });
-  }
-  history.push({ role: "user", content });
+  const inherited = sourceUserMessage
+    ? (await loadMessageAttachments(client, [sourceUserMessage], true)).get(
+        sourceUserMessage,
+      ) ?? []
+    : [];
+  const currentFiles: SavedAttachment[] = sourceUserMessage
+    ? inherited
+    : intent.attachments.map((file) => ({ id: "", ...file }));
+  const history = await attachmentHistory(
+    client,
+    model,
+    content,
+    currentFiles,
+    previous,
+  );
   const id = randomUUID();
   const userMessageId = randomUUID();
   const assistantId = randomUUID();
@@ -487,6 +558,21 @@ async function prepare(
       [userMessageId, chatId, id, content, assistantId],
     )
   ).rows;
+  const attachments = sourceUserMessage
+    ? (await inheritAttachments(
+        client,
+        sourceUserMessage,
+        userMessageId,
+        chatId,
+      ),
+      inherited.map(({ data, textContent, textCharacters, ...meta }) => meta))
+    : await storeAttachments(
+        client,
+        userId,
+        chatId,
+        userMessageId,
+        intent.attachments,
+      );
   if (sourceGeneration)
     await client.query(
       "UPDATE family_generation SET superseded_at=now() WHERE id=$1 AND chat_id=$2 AND user_id=$3",
@@ -503,7 +589,11 @@ async function prepare(
   return {
     id,
     assistantId,
-    userMessage: messageJson({ ...rows[0], requested_model: model.id }),
+    userMessage: messageJson({
+      ...rows[0],
+      requested_model: model.id,
+      attachments,
+    }),
     assistantMessage: messageJson({ ...rows[1], requested_model: model.id }),
     history,
     model,
@@ -538,6 +628,11 @@ export async function generate(
       "管理员尚未配置模型 API，当前不能发送消息。",
       "MODEL_NOT_CONFIGURED",
     );
+  intent.attachments = await prepareAttachments(
+    body.attachments,
+    request.signal,
+    userId,
+  );
   const started = await transaction((client) =>
     prepare(client, userId, chatId, intent, requestId),
   );

@@ -12,7 +12,7 @@ console.log("[Next] build with chunk: ", !disableChunk);
 const nextConfig = {
   poweredByHeader: false,
   // Keep ws optional native dependencies under Node's normal require fallback.
-  serverExternalPackages: ["ws"],
+  serverExternalPackages: ["ws", "sharp", "pdf-lib"],
   webpack(config) {
     config.module.rules.push({
       test: /\.svg$/,

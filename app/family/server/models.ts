@@ -1,6 +1,7 @@
 import "server-only";
 import type { FamilyModel, FamilyModelCatalog } from "../types";
 import { FamilyApiError } from "./errors";
+import type { CompletionMessage } from "./attachments";
 
 // Only text Chat Completions profiles explicitly checked against OpenAI's model
 // pages are admitted. An account's /models list is not a capability declaration.
@@ -103,6 +104,23 @@ const DEFAULT_MODELS = [
   "gpt-6.1-sol",
   "gpt-6-astra",
 ];
+// Capability admission is curated independently of account/model discovery.
+// PDF Chat Completions requires image-capable models:
+// https://developers.openai.com/api/docs/guides/file-inputs
+const ATTACHMENT_MODELS = new Set([
+  "gpt-4o-mini",
+  "gpt-4o",
+  "gpt-4.1-nano",
+  "gpt-4.1-mini",
+  "gpt-4.1",
+  // Each model page explicitly lists Image input and Chat Completions support:
+  // https://developers.openai.com/api/docs/models/gpt-6.1-sol (and the IDs below)
+  "gpt-5.4-mini",
+  "gpt-6-luna",
+  "gpt-6.1-terra",
+  "gpt-6.1-sol",
+  "gpt-6-astra",
+]);
 
 export function modelCatalog(): FamilyModelCatalog {
   const defaultModel = process.env.FAMILY_OPENAI_MODEL?.trim() || "gpt-4o-mini";
@@ -129,7 +147,15 @@ export function modelCatalog(): FamilyModelCatalog {
       "模型目录尚未配置完成，请联系管理员。",
       "MODEL_CATALOG_MISCONFIGURED",
     );
-  return { defaultModel, models: ids.map((id) => ({ id, ...PROFILES[id] })) };
+  return {
+    defaultModel,
+    models: ids.map((id) => ({
+      id,
+      ...PROFILES[id],
+      supportsImages: ATTACHMENT_MODELS.has(id),
+      supportsPdf: ATTACHMENT_MODELS.has(id),
+    })),
+  };
 }
 
 export function allowedModel(value: unknown): FamilyModel {
@@ -147,7 +173,7 @@ export function allowedModel(value: unknown): FamilyModel {
 
 export function completionBody(
   model: FamilyModel,
-  messages: { role: "user" | "assistant"; content: string }[],
+  messages: CompletionMessage[],
 ) {
   return {
     model: model.id,

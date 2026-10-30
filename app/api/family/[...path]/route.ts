@@ -19,8 +19,13 @@ import {
   newChat,
   updateChat,
   cancelGeneration,
+  validId,
 } from "@/app/family/server/chats";
 import { modelCatalog } from "@/app/family/server/models";
+import {
+  ATTACHMENT_REQUEST_LIMIT,
+  readAttachment,
+} from "@/app/family/server/attachments";
 import {
   ensureFamilyApplicationUpgrade,
   requireFamilyApplicationUpgrade,
@@ -93,12 +98,48 @@ async function handle(
     }
     if (
       path[0] === "chats" ||
+      path[0] === "attachments" ||
       joined === "models" ||
-      (path[0] === "admin" && path.includes("chats"))
+      (path[0] === "admin" &&
+        (path.includes("chats") || path.includes("attachments")))
     )
       await requireFamilyApplicationUpgrade();
     if (method === "GET" && joined === "models")
       return finish(json(modelCatalog()));
+    if (
+      method === "GET" &&
+      ((path[0] === "attachments" && path.length === 2) ||
+        (path[0] === "admin" && path[1] === "attachments" && path.length === 3))
+    ) {
+      const admin = path[0] === "admin";
+      const saved = await readAttachment(
+        validId(path[admin ? 2 : 1]),
+        admin ? undefined : userId,
+      );
+      if (admin)
+        await audit(
+          userId,
+          "attachment.content.read",
+          saved.ownerId,
+          saved.chatId,
+        );
+      return finish(
+        new Response(new Uint8Array(saved.bytes), {
+          headers: {
+            "Content-Type": saved.meta.mediaType,
+            "Content-Length": String(saved.bytes.length),
+            "Content-Disposition": `${
+              saved.meta.kind === "image" ? "inline" : "attachment"
+            }; filename="attachment"; filename*=UTF-8''${encodeURIComponent(
+              saved.meta.name,
+            ).replace(
+              /[!'()*]/g,
+              (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+            )}`,
+          },
+        }),
+      );
+    }
     if (method === "POST")
       await rateLimit(
         request,
@@ -148,7 +189,12 @@ async function handle(
       path[2] === "messages"
     ) {
       return finish(
-        await generate(request, userId, path[1], await bodyJson(request)),
+        await generate(
+          request,
+          userId,
+          path[1],
+          await bodyJson(request, ATTACHMENT_REQUEST_LIMIT),
+        ),
       );
     }
     if (method === "POST" && joined === "activity")

@@ -6,10 +6,40 @@ The public page shows a login form; private chat and administrator APIs require 
 approved account. A single-use invitation creates a pending account, which an
 administrator must approve before it can log in.
 
-The registration and account screens disclose that administrators can inspect
+The family app isolates records between members, with administrator access to
 accounts, prompts, replies, reported token usage and estimated foreground active
-time. This is account isolation between family members, with administrator access.
+time. These access rules are independent of the visible interface copy.
 Archiving hides a conversation from its member while retaining it for the admin.
+
+## Attachments and mobile layout
+
+The application upgrade endpoint adds schema v4 without resetting existing users,
+sessions, messages or usage. Normal requests only inspect schema readiness; an
+authenticated administrator explicitly applies the additive migration.
+
+JPEG, PNG and WebP images, PDF documents and UTF-8 TXT/Markdown/CSV/JSON/log files
+can be sent with a message. There are at most three files, 1,000,000 bytes per file
+and 2,000,000 bytes combined. The message request is bounded to 3,000,000 bytes.
+Images are validated and re-encoded on the server; PDFs are parsed in a terminated,
+time-bounded worker and limited to ten pages each and ten pages per new message.
+The PDF worker heap limit does not bound every native allocation.
+
+Attachment bytes and message links are committed in the same database transaction.
+Metadata in chat JSON never includes base64 data. Private owner and administrator
+download routes require an approved session and disable caching. An administrator
+read is audited. Edits, retries and regeneration retain the source files without
+duplicating their bytes; an edit changes text only. Archived and superseded file
+links are hidden from member access.
+
+Logical attachment bytes are capped at 64 MiB per user and 256 MiB per application.
+These are application quotas, not measurements of Neon physical storage: indexes,
+text copies, TOAST and branch history also consume storage. Heavy normalization is
+limited to two jobs per server instance and one per user in that instance, rather
+than a distributed concurrency guarantee. No new object-storage service is needed.
+
+The mobile surface follows the visual viewport without disabling pinch zoom.
+Keyboard, short-height, safe-area, scrolling and touch-target behavior are handled
+within the family UI. Responsive browser tests are not physical-phone validation.
 
 ## Server configuration
 
