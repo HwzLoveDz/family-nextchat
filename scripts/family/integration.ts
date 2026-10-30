@@ -87,6 +87,7 @@ async function main() {
   if (!("AsyncLocalStorage" in globalThis))
     throw new Error("TEST_PRELOAD_REQUIRED");
   process.env.DATABASE_URL = url;
+  process.env.DATABASE_URL_UNPOOLED = url;
   process.env.FAMILY_DATABASE_SCHEMA = schema;
   process.env.FAMILY_MODE = "1";
   process.env.BETTER_AUTH_URL = base;

@@ -9,6 +9,45 @@ import { configuredOrigin } from "./errors";
 import { ensureFamilySchema } from "./schema";
 import { applicationUpgradeStatus } from "./upgrades";
 
+function statusErrorCode(error: unknown): string {
+  if (!error || typeof error !== "object") return "STATUS_UNCLASSIFIED";
+  const code = "code" in error ? error.code : undefined;
+  if (
+    typeof code === "string" &&
+    (/^[0-9A-Z]{5}$/.test(code) ||
+      [
+        "ECONNRESET",
+        "ECONNREFUSED",
+        "ENOTFOUND",
+        "ETIMEDOUT",
+        "EAI_AGAIN",
+        "SELF_SIGNED_CERT_IN_CHAIN",
+        "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+        "ERR_TLS_CERT_ALTNAME_INVALID",
+        "DEPTH_ZERO_SELF_SIGNED_CERT",
+      ].includes(code))
+  )
+    return code;
+  if (
+    error instanceof FamilyApiError &&
+    typeof error.code === "string" &&
+    /^[A-Z0-9_]{1,40}$/.test(error.code)
+  )
+    return error.code;
+  if (
+    error instanceof Error &&
+    [
+      "FAMILY_DATABASE_UNAVAILABLE",
+      "FAMILY_TEST_UNPOOLED_DATABASE_REQUIRED",
+      "INVALID_TEST_SCHEMA",
+      "TEST_SCHEMA_FORBIDDEN_IN_PRODUCTION",
+      "INVALID_POSTGRES_DESTINATION",
+    ].includes(error.message)
+  )
+    return error.message;
+  return "STATUS_UNCLASSIFIED";
+}
+
 export async function siteStatus(): Promise<FamilySiteStatus> {
   const result: FamilySiteStatus = {
     deploymentEnvironment:
@@ -43,7 +82,10 @@ export async function siteStatus(): Promise<FamilySiteStatus> {
       result.notice += " 模型 API 尚未配置，当前不能发送消息。";
     Object.assign(result, await applicationUpgradeStatus());
     return result;
-  } catch {
+  } catch (error) {
+    console.error("[FamilyStatus] unavailable", {
+      code: statusErrorCode(error),
+    });
     return {
       ...result,
       notice: `${FAMILY_NOTICE} 账号服务正在配置或暂时不可用。`,

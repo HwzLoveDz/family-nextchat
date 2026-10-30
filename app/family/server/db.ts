@@ -16,7 +16,6 @@ export function verifiedPostgresConnectionString(raw: string): string {
   return url.toString();
 }
 export function getPool(): Pool {
-  if (!process.env.DATABASE_URL) throw new Error("FAMILY_DATABASE_UNAVAILABLE");
   const schema = process.env.FAMILY_DATABASE_SCHEMA;
   if (schema && !/^family_test_[a-f0-9]{16}$/.test(schema))
     throw new Error("INVALID_TEST_SCHEMA");
@@ -27,11 +26,20 @@ export function getPool(): Pool {
         process.env.VERCEL_ENV !== "preview"))
   )
     throw new Error("TEST_SCHEMA_FORBIDDEN_IN_PRODUCTION");
+  // PgBouncer cannot preserve the startup search_path needed for strict schema
+  // isolation. Preview/local fixtures must use the integration's direct DSN.
+  const databaseUrl = schema
+    ? process.env.DATABASE_URL_UNPOOLED
+    : process.env.DATABASE_URL;
+  if (!databaseUrl)
+    throw new Error(
+      schema
+        ? "FAMILY_TEST_UNPOOLED_DATABASE_REQUIRED"
+        : "FAMILY_DATABASE_UNAVAILABLE",
+    );
   if (!pool) {
     pool = new Pool({
-      connectionString: verifiedPostgresConnectionString(
-        process.env.DATABASE_URL,
-      ),
+      connectionString: verifiedPostgresConnectionString(databaseUrl),
       max: 3,
       idleTimeoutMillis: 10_000,
       connectionTimeoutMillis: 5_000,

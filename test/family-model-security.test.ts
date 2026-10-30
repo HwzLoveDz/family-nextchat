@@ -62,6 +62,8 @@ describe("family application upgrade boundaries", () => {
     // These are synthetic fixtures. No real credential or connection string is read.
     process.env.DATABASE_URL =
       "postgresql://fixture:fixture@database.test.invalid/family?sslmode=require";
+    process.env.DATABASE_URL_UNPOOLED =
+      "postgresql://fixture:fixture@direct-database.test.invalid/family?sslmode=require&uselibpqcompat=true";
     process.env.OPENAI_API_KEY = "fixture-not-a-real-provider-key";
     global.fetch = fetchMock;
     poolQuery.mockImplementation(async (sql) => {
@@ -74,6 +76,7 @@ describe("family application upgrade boundaries", () => {
     await database.closeFamilyDatabase();
     global.fetch = initialFetch;
     delete process.env.DATABASE_URL;
+    delete process.env.DATABASE_URL_UNPOOLED;
     delete process.env.OPENAI_API_KEY;
     if (initialNodeEnv === undefined)
       Reflect.deleteProperty(process.env, "NODE_ENV");
@@ -234,11 +237,30 @@ describe("family application upgrade boundaries", () => {
       "-c search_path=family_test_0123456789abcdef",
     );
     expect(String(poolOptions[0].options)).not.toContain("public");
-    expect(
-      new URL(String(poolOptions[0].connectionString)).searchParams.get(
-        "sslmode",
-      ),
-    ).toBe("verify-full");
+    const connection = new URL(String(poolOptions[0].connectionString));
+    expect(connection.hostname).toBe("direct-database.test.invalid");
+    expect(connection.searchParams.get("sslmode")).toBe("verify-full");
+    expect(connection.searchParams.has("uselibpqcompat")).toBe(false);
+  });
+
+  test("an isolated schema without an unpooled URL cannot fall back to the pooled database", () => {
+    process.env.FAMILY_DATABASE_SCHEMA = "family_test_0123456789abcdef";
+    delete process.env.DATABASE_URL_UNPOOLED;
+    expect(() => database.getPool()).toThrow(
+      "FAMILY_TEST_UNPOOLED_DATABASE_REQUIRED",
+    );
+    expect(poolOptions).toHaveLength(0);
+  });
+
+  test("production without a schema override keeps its original pooled destination", () => {
+    Reflect.set(process.env, "NODE_ENV", "production");
+    process.env.VERCEL_ENV = "production";
+    database.getPool();
+    expect(poolOptions).toHaveLength(1);
+    const connection = new URL(String(poolOptions[0].connectionString));
+    expect(connection.hostname).toBe("database.test.invalid");
+    expect(connection.searchParams.get("sslmode")).toBe("verify-full");
+    expect(poolOptions[0]).not.toHaveProperty("options");
   });
 
   test.each([
