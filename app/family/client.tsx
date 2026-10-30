@@ -1704,7 +1704,13 @@ export function FamilyApp() {
                 <button
                   className={styles.secondary}
                   disabled={turnLocked || !activeChat}
-                  onClick={() => setRenameTitle(activeChat?.title ?? "")}
+                  onClick={() =>
+                    setRenameTitle(
+                      chats.find((chat) => chat.id === selectedChat)?.title ??
+                        activeChat?.title ??
+                        "",
+                    )
+                  }
                 >
                   重命名
                 </button>
