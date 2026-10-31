@@ -11,7 +11,11 @@ import {
 } from "./attachment-browser";
 import styles from "./attachment.module.scss";
 
-export type AttachmentScope = { key: string; isCurrent: () => boolean };
+export type AttachmentScope = {
+  key: string;
+  isCurrent: () => boolean;
+  readable?: boolean;
+};
 export type DraftAttachment = PreparedAttachment & {
   localId: string;
   status: "preparing" | "ready" | "error";
@@ -325,6 +329,7 @@ function SavedAttachment({
     timers = useRef(new Set<number>());
   const alive = useRef(true);
   const key = `${scope.key}:${admin ? "admin" : "owner"}:${attachment.id}`;
+  const readable = scope.readable !== false;
   const currentKey = useRef(key);
   currentKey.current = key;
   useEffect(() => {
@@ -394,7 +399,13 @@ function SavedAttachment({
     }
   };
   useEffect(() => {
-    if (!visible || attachment.kind !== "image") return;
+    if (
+      !visible ||
+      attachment.kind !== "image" ||
+      !readable ||
+      (preview?.key === key && !error)
+    )
+      return;
     const controller = new AbortController();
     const captured = key;
     let active = true;
@@ -415,6 +426,10 @@ function SavedAttachment({
           throw new Error("图片格式无法预览。");
         const url = URL.createObjectURL(blob);
         urls.current.add(url);
+        if (preview?.url) {
+          URL.revokeObjectURL(preview.url);
+          urls.current.delete(preview.url);
+        }
         setPreview({ key: captured, url, blob });
       })
       .catch((failure) => {
@@ -434,12 +449,12 @@ function SavedAttachment({
     return () => {
       active = false;
       controller.abort();
-      urls.current.forEach((url) => URL.revokeObjectURL(url));
-      urls.current.clear();
+      // Identity probes pause pending reads without revoking an already loaded
+      // preview. Ownership changes/unmount still release all private URLs.
     };
     // Keys represent ownership; keep callbacks in latest so stream updates do not refetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, visible, retry, attachment.kind]);
+  }, [key, visible, retry, attachment.kind, readable]);
   const download = async () => {
     if (!alive.current || !latest.current.scope.isCurrent() || downloading)
       return;
@@ -534,7 +549,7 @@ function SavedAttachment({
         ) : null}
         <button
           type="button"
-          disabled={downloading}
+          disabled={downloading || !readable}
           onClick={() => void download()}
         >
           {downloading ? "下载中…" : "下载附件"}

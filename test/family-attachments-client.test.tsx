@@ -99,6 +99,7 @@ describe("atomic family attachments with synthetic files and mock APIs", () => {
     [window, "Image"],
     [HTMLCanvasElement.prototype, "getContext"],
     [HTMLCanvasElement.prototype, "toBlob"],
+    [document, "visibilityState"],
   ].map(([target, key]) => ({
     target: target as object,
     key: key as string,
@@ -109,6 +110,7 @@ describe("atomic family attachments with synthetic files and mock APIs", () => {
   let record: FamilyChatDetail;
   let handler: (url: string, init?: RequestInit) => Promise<Response>;
   let fetchMock: ReturnType<typeof makeFetch>;
+  let verificationClock: number;
   function makeFetch() {
     return jest.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
       handler(String(input), init),
@@ -116,6 +118,9 @@ describe("atomic family attachments with synthetic files and mock APIs", () => {
   }
   beforeEach(() => {
     let uuid = 0;
+    verificationClock = Date.now();
+    jest.spyOn(Date, "now").mockImplementation(() => verificationClock);
+    property(document, "visibilityState", "visible");
     history.replaceState(null, "", "/");
     property(
       crypto,
@@ -194,6 +199,11 @@ describe("atomic family attachments with synthetic files and mock APIs", () => {
     await waitFor(() =>
       expect(screen.queryByText("正在处理…")).not.toBeInTheDocument(),
     );
+  }
+  function resume(kind: "focus" | "pageshow" | "visible" = "focus") {
+    verificationClock += 3_000;
+    if (kind === "visible") fireEvent(document, new Event("visibilitychange"));
+    else fireEvent(window, new Event(kind));
   }
   function complete(content: string, attachments = [metadata]) {
     const user: FamilyMessage = {
@@ -381,6 +391,334 @@ describe("atomic family attachments with synthetic files and mock APIs", () => {
     ).toBeEnabled();
   });
 
+  test("same-user focus/pageshow/visible checks are singleflight and keep ready files, typed text and the current chat mounted", async () => {
+    const base = handler;
+    let checking = false,
+      meReads = 0;
+    let finishMe!: (response: Response) => void;
+    const delayedMe = new Promise<Response>((resolve) => {
+      finishMe = resolve;
+    });
+    handler = async (url, init) => {
+      if (url === "/api/family/me") {
+        meReads++;
+        if (checking) return delayedMe;
+      }
+      if (url === "/api/family/chats/chat-a/messages") {
+        const body = JSON.parse(String(init?.body));
+        expect(body.content).toBe("未发送的文字和文件");
+        expect(body.attachments).toEqual([
+          {
+            name: "note.txt",
+            mediaType: "text/plain",
+            dataBase64: btoa("note-a"),
+          },
+        ]);
+        return complete(body.content);
+      }
+      return base(url, init);
+    };
+    await open();
+    const composer = screen.getByRole("textbox", { name: "发送消息" });
+    const fileInput = screen.getByLabelText("选择附件文件");
+    fireEvent.change(composer, { target: { value: "未发送的文字和文件" } });
+    await select([new File(["note-a"], "note.txt", { type: "text/plain" })]);
+    const detailReads = fetchMock.mock.calls.filter(
+      ([url]) => String(url) === "/api/family/chats/chat-a",
+    ).length;
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /附件测试/ }));
+    });
+    expect(screen.getByRole("textbox", { name: "发送消息" })).toBe(composer);
+    expect(composer).toHaveValue("未发送的文字和文件");
+    expect(
+      screen.getByRole("button", { name: "移除附件 note.txt" }),
+    ).toBeEnabled();
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url]) => String(url) === "/api/family/chats/chat-a",
+      ),
+    ).toHaveLength(detailReads);
+    checking = true;
+    const initialMeReads = meReads;
+    const initialStatusReads = fetchMock.mock.calls.filter(
+      ([url]) => String(url) === "/api/family/status",
+    ).length;
+    try {
+      await act(async () => {
+        resume();
+        fireEvent(window, new Event("pageshow"));
+        fireEvent(document, new Event("visibilitychange"));
+      });
+      await waitFor(() => expect(meReads).toBe(initialMeReads + 1));
+      expect(
+        fetchMock.mock.calls.filter(
+          ([url]) => String(url) === "/api/family/status",
+        ),
+      ).toHaveLength(initialStatusReads + 1);
+      expect(screen.getByRole("textbox", { name: "发送消息" })).toBe(composer);
+      expect(screen.getByLabelText("选择附件文件")).toBe(fileInput);
+      expect(composer).toHaveValue("未发送的文字和文件");
+      expect(
+        screen.getByRole("button", { name: "移除附件 note.txt" }),
+      ).toBeInTheDocument();
+    } finally {
+      checking = false;
+      await act(async () => {
+        finishMe(json({ user: memberA, sessionExpiresAt: createdAt }));
+        await delayedMe;
+      });
+    }
+    expect(screen.getByRole("textbox", { name: "发送消息" })).toBe(composer);
+    fireEvent.click(screen.getByRole("button", { name: "发送 ↑" }));
+    expect(await screen.findByText("附件已分析")).toBeInTheDocument();
+  });
+
+  test.each([
+    ["status", "network"],
+    ["status", "503"],
+    ["me", "network"],
+    ["me", "503"],
+  ])(
+    "temporary %s %s checks retain ready files and text for an unchanged later send",
+    async (endpoint, failure) => {
+      const base = handler;
+      let fail = false;
+      let returned!: () => void;
+      const failedCheck = new Promise<void>((resolve) => {
+        returned = resolve;
+      });
+      handler = async (url, init) => {
+        if (fail && url === `/api/family/${endpoint}`) {
+          returned();
+          if (failure === "network")
+            throw new TypeError("Synthetic network interruption");
+          return json({ error: "合成暂时不可用" }, 503);
+        }
+        if (url === "/api/family/chats/chat-a/messages") {
+          const body = JSON.parse(String(init?.body));
+          expect(body.content).toBe("网络恢复后原样发送");
+          expect(body.attachments).toEqual([
+            {
+              name: "note.txt",
+              mediaType: "text/plain",
+              dataBase64: btoa("note-a"),
+            },
+          ]);
+          return complete(body.content);
+        }
+        return base(url, init);
+      };
+      await open();
+      const composer = screen.getByRole("textbox", { name: "发送消息" });
+      fireEvent.change(composer, { target: { value: "网络恢复后原样发送" } });
+      await select([new File(["note-a"], "note.txt", { type: "text/plain" })]);
+      fail = true;
+      await act(async () => {
+        resume(endpoint === "status" ? "pageshow" : "visible");
+        await failedCheck;
+      });
+      expect(screen.getByRole("textbox", { name: "发送消息" })).toBe(composer);
+      expect(composer).toHaveValue("网络恢复后原样发送");
+      expect(
+        screen.getByRole("button", { name: "移除附件 note.txt" }),
+      ).toBeEnabled();
+      expect(composer).toBeEnabled();
+      expect(screen.getByRole("button", { name: "发送 ↑" })).toBeDisabled();
+      fail = false;
+      fireEvent.click(screen.getByRole("button", { name: "重新检查登录状态" }));
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "发送 ↑" })).toBeEnabled(),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "发送 ↑" }));
+      expect(await screen.findByText("附件已分析")).toBeInTheDocument();
+    },
+  );
+
+  test.each(["same-user pending", "temporary failure"])(
+    "attachment preparation survives a %s identity check and can finish and send",
+    async (mode) => {
+      let finishBytes!: (value: ArrayBuffer) => void;
+      const delayedBytes = new Promise<ArrayBuffer>((resolve) => {
+        finishBytes = resolve;
+      });
+      let finishMe!: (value: Response) => void;
+      const delayedMe = new Promise<Response>((resolve) => {
+        finishMe = resolve;
+      });
+      let verify = false,
+        meRead = false;
+      const base = handler;
+      property(Blob.prototype, "arrayBuffer", function (this: File) {
+        return this.name === "preparing.txt" ? delayedBytes : read(this);
+      });
+      handler = async (url, init) => {
+        if (verify && url === "/api/family/me") {
+          meRead = true;
+          return mode === "same-user pending"
+            ? delayedMe
+            : json({ error: "合成暂时不可用" }, 503);
+        }
+        if (url === "/api/family/chats/chat-a/messages") {
+          const body = JSON.parse(String(init?.body));
+          expect(body.content).toBe("保留正在处理的文件");
+          expect(body.attachments).toEqual([
+            {
+              name: "preparing.txt",
+              mediaType: "text/plain",
+              dataBase64: btoa("pending-a"),
+            },
+          ]);
+          return complete(body.content);
+        }
+        return base(url, init);
+      };
+      await open();
+      const composer = screen.getByRole("textbox", { name: "发送消息" });
+      fireEvent.change(composer, { target: { value: "保留正在处理的文件" } });
+      fireEvent.change(screen.getByLabelText("选择附件文件"), {
+        target: {
+          files: [
+            new File(["pending-a"], "preparing.txt", { type: "text/plain" }),
+          ],
+        },
+      });
+      expect(await screen.findByText("正在处理…")).toBeInTheDocument();
+      verify = true;
+      try {
+        await act(async () => {
+          resume();
+        });
+        await waitFor(() => expect(meRead).toBe(true));
+        expect(screen.getByRole("textbox", { name: "发送消息" })).toBe(
+          composer,
+        );
+        expect(screen.getByText("preparing.txt")).toBeInTheDocument();
+        await act(async () => {
+          finishBytes(
+            new TextEncoder().encode("pending-a").buffer as ArrayBuffer,
+          );
+          await delayedBytes;
+        });
+        await waitFor(() =>
+          expect(screen.queryByText("正在处理…")).not.toBeInTheDocument(),
+        );
+        expect(
+          screen.getByRole("button", { name: "移除附件 preparing.txt" }),
+        ).toBeEnabled();
+      } finally {
+        verify = false;
+        await act(async () => {
+          finishBytes(
+            new TextEncoder().encode("pending-a").buffer as ArrayBuffer,
+          );
+          finishMe(json({ user: memberA, sessionExpiresAt: createdAt }));
+          await Promise.all([delayedBytes, delayedMe]);
+        });
+      }
+      expect(composer).toHaveValue("保留正在处理的文件");
+      if (mode === "temporary failure") {
+        expect(screen.getByRole("button", { name: "发送 ↑" })).toBeDisabled();
+        fireEvent.click(
+          screen.getByRole("button", { name: "重新检查登录状态" }),
+        );
+      }
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "发送 ↑" })).toBeEnabled(),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "发送 ↑" }));
+      expect(await screen.findByText("附件已分析")).toBeInTheDocument();
+    },
+  );
+
+  test.each([401, 403])(
+    "a genuine %s clears drafts and aborts late private bytes instead of retaining another session's data",
+    async (status) => {
+      let finishBytes!: (value: ArrayBuffer) => void,
+        finishBlob!: (value: Blob) => void;
+      const delayedBytes = new Promise<ArrayBuffer>((resolve) => {
+        finishBytes = resolve;
+      });
+      const delayedBlob = new Promise<Blob>((resolve) => {
+        finishBlob = resolve;
+      });
+      let verify = false,
+        privateSignal: AbortSignal | undefined;
+      const base = handler;
+      record = {
+        chat,
+        messages: [
+          {
+            id: "private-user",
+            role: "user",
+            content: "甲账号私有文字",
+            status: "complete",
+            createdAt,
+            attachments: [
+              {
+                ...metadata,
+                name: "private.jpg",
+                kind: "image",
+                mediaType: "image/jpeg",
+              },
+            ],
+          },
+        ],
+      };
+      property(Blob.prototype, "arrayBuffer", function (this: File) {
+        return this.name === "preparing.txt" ? delayedBytes : read(this);
+      });
+      handler = async (url, init) => {
+        if (verify && url === "/api/family/me")
+          return json({ error: "合成账号不可用" }, status);
+        if (url === "/api/family/attachments/private-attachment-a") {
+          privateSignal = init?.signal as AbortSignal;
+          return { ok: true, status: 200, blob: () => delayedBlob } as Response;
+        }
+        return base(url, init);
+      };
+      await open();
+      await waitFor(() => expect(privateSignal).toBeDefined());
+      fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
+        target: { value: "仅甲可见的草稿" },
+      });
+      fireEvent.change(screen.getByLabelText("选择附件文件"), {
+        target: {
+          files: [
+            new File(["private-a"], "preparing.txt", { type: "text/plain" }),
+          ],
+        },
+      });
+      expect(await screen.findByText("正在处理…")).toBeInTheDocument();
+      verify = true;
+      try {
+        await act(async () => {
+          resume();
+        });
+        await waitFor(() =>
+          expect(
+            screen.queryByRole("textbox", { name: "发送消息" }),
+          ).not.toBeInTheDocument(),
+        );
+        expect(privateSignal?.aborted).toBe(true);
+        expect(screen.queryByText("甲账号私有文字")).not.toBeInTheDocument();
+        expect(screen.queryByText("preparing.txt")).not.toBeInTheDocument();
+      } finally {
+        await act(async () => {
+          finishBytes(
+            new TextEncoder().encode("private-a").buffer as ArrayBuffer,
+          );
+          finishBlob(new Blob(["late-private-image"], { type: "image/jpeg" }));
+          await Promise.all([delayedBytes, delayedBlob]);
+        });
+      }
+      expect(URL.createObjectURL).not.toHaveBeenCalled();
+      expect(
+        fetchMock.mock.calls.some(([url]) => String(url).endsWith("/messages")),
+      ).toBe(false);
+    },
+  );
+
   test("an encoding result arriving after an account switch cannot send A's attachment as B", async () => {
     let resolveBytes!: (bytes: ArrayBuffer) => void;
     const delayed = new Promise<ArrayBuffer>((resolve) => {
@@ -396,7 +734,9 @@ describe("atomic family attachments with synthetic files and mock APIs", () => {
     fireEvent.click(screen.getByRole("button", { name: "发送 ↑" }));
     await waitFor(() => expect(reads).toBe(2));
     identity = memberB;
-    fireEvent.focus(window);
+    await act(async () => {
+      resume();
+    });
     expect(await screen.findByText(memberB.name)).toBeInTheDocument();
     await act(async () => {
       resolveBytes(new TextEncoder().encode("late-a").buffer as ArrayBuffer);
@@ -406,6 +746,179 @@ describe("atomic family attachments with synthetic files and mock APIs", () => {
       fetchMock.mock.calls.some(([url]) => String(url).endsWith("/messages")),
     ).toBe(false);
     expect(screen.queryByText("late.txt")).not.toBeInTheDocument();
+  });
+
+  test("a pending saved image aborted by a background check automatically reloads after the same identity is verified", async () => {
+    const base = handler;
+    let finishBlob!: (value: Blob) => void,
+      finishMe!: (value: Response) => void;
+    const delayedBlob = new Promise<Blob>((resolve) => {
+      finishBlob = resolve;
+    });
+    const delayedMe = new Promise<Response>((resolve) => {
+      finishMe = resolve;
+    });
+    let checking = false,
+      meRead = false,
+      privateReads = 0;
+    let firstSignal: AbortSignal | undefined;
+    record = {
+      chat,
+      messages: [
+        {
+          id: "saved-image-user",
+          role: "user",
+          content: "已保存的私有图片",
+          status: "complete",
+          createdAt,
+          attachments: [
+            {
+              ...metadata,
+              name: "private.jpg",
+              kind: "image",
+              mediaType: "image/jpeg",
+            },
+          ],
+        },
+      ],
+    };
+    handler = async (url, init) => {
+      if (checking && url === "/api/family/me") {
+        meRead = true;
+        return delayedMe;
+      }
+      if (url === "/api/family/attachments/private-attachment-a") {
+        privateReads++;
+        if (privateReads === 1) {
+          firstSignal = init?.signal as AbortSignal;
+          return { ok: true, status: 200, blob: () => delayedBlob } as Response;
+        }
+        return {
+          ok: true,
+          status: 200,
+          blob: async () =>
+            new Blob(["verified-private-image"], { type: "image/jpeg" }),
+        } as Response;
+      }
+      return base(url, init);
+    };
+    await open();
+    await waitFor(() => expect(privateReads).toBe(1));
+    const attachmentList = screen.getByRole("list", { name: "消息附件" });
+    checking = true;
+    try {
+      await act(async () => {
+        resume();
+      });
+      await waitFor(() => expect(meRead).toBe(true));
+      expect(firstSignal?.aborted).toBe(true);
+      expect(screen.getByRole("button", { name: "下载附件" })).toBeDisabled();
+      await act(async () => {
+        finishBlob(new Blob(["stale-private-image"], { type: "image/jpeg" }));
+        await delayedBlob;
+      });
+      expect(URL.createObjectURL).not.toHaveBeenCalled();
+      expect(privateReads).toBe(1);
+      expect(screen.getByRole("list", { name: "消息附件" })).toBe(
+        attachmentList,
+      );
+    } finally {
+      checking = false;
+      await act(async () => {
+        finishBlob(new Blob(["stale-private-image"], { type: "image/jpeg" }));
+        finishMe(json({ user: memberA, sessionExpiresAt: createdAt }));
+        await Promise.all([delayedBlob, delayedMe]);
+      });
+    }
+    expect(await screen.findByAltText("private.jpg")).toHaveAttribute(
+      "src",
+      "blob:synthetic-attachment",
+    );
+    expect(privateReads).toBe(2);
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+    expect(screen.getByRole("list", { name: "消息附件" })).toBe(attachmentList);
+  });
+
+  test("an existing saved image preview survives same-user background verification without another fetch or URL revocation", async () => {
+    const base = handler;
+    let checking = false,
+      meRead = false,
+      privateReads = 0;
+    let finishMe!: (value: Response) => void;
+    const delayedMe = new Promise<Response>((resolve) => {
+      finishMe = resolve;
+    });
+    record = {
+      chat,
+      messages: [
+        {
+          id: "saved-image-user",
+          role: "user",
+          content: "已保存的私有图片",
+          status: "complete",
+          createdAt,
+          attachments: [
+            {
+              ...metadata,
+              name: "private.jpg",
+              kind: "image",
+              mediaType: "image/jpeg",
+            },
+          ],
+        },
+      ],
+    };
+    handler = async (url, init) => {
+      if (checking && url === "/api/family/me") {
+        meRead = true;
+        return delayedMe;
+      }
+      if (url === "/api/family/attachments/private-attachment-a") {
+        privateReads++;
+        return {
+          ok: true,
+          status: 200,
+          blob: async () =>
+            new Blob(["verified-private-image"], { type: "image/jpeg" }),
+        } as Response;
+      }
+      return base(url, init);
+    };
+    const view = await open();
+    const image = await screen.findByAltText("private.jpg");
+    expect(privateReads).toBe(1);
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+    checking = true;
+    try {
+      await act(async () => {
+        resume("pageshow");
+      });
+      await waitFor(() => expect(meRead).toBe(true));
+      expect(screen.getByAltText("private.jpg")).toBe(image);
+      expect(image).toHaveAttribute("src", "blob:synthetic-attachment");
+      expect(screen.getByRole("button", { name: "下载附件" })).toBeDisabled();
+      expect(privateReads).toBe(1);
+      expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+    } finally {
+      checking = false;
+      await act(async () => {
+        finishMe(json({ user: memberA, sessionExpiresAt: createdAt }));
+        await delayedMe;
+      });
+    }
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "下载附件" })).toBeEnabled(),
+    );
+    expect(screen.getByAltText("private.jpg")).toBe(image);
+    expect(privateReads).toBe(1);
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+    view.unmount();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(
+      "blob:synthetic-attachment",
+    );
   });
 
   test("late private image bytes cannot create a Blob URL after their scope is removed", async () => {

@@ -319,6 +319,8 @@ export function FamilyApp() {
   const [notice, setNotice] = useState("");
   const [working, setWorking] = useState(false);
   const [checking, setChecking] = useState(false);
+  const [identityBlocked, setIdentityBlocked] = useState(false);
+  const [identityWarning, setIdentityWarning] = useState("");
   const [logoutFailed, setLogoutFailed] = useState(false);
   const [inviteToken, setInviteToken] = useState("");
   const [chats, setChats] = useState<FamilyChat[]>([]);
@@ -373,6 +375,8 @@ export function FamilyApp() {
   const channel = useRef<BroadcastChannel | null>(null);
   const logoutIntent = useRef(false);
   const checkSequence = useRef(0);
+  const identityCheck = useRef<Promise<void> | null>(null);
+  const lastBackgroundCheck = useRef(-Infinity);
   const listVersion = useRef(0);
   const adminVersion = useRef(0);
   const bottom = useRef<HTMLDivElement>(null);
@@ -536,67 +540,111 @@ export function FamilyApp() {
     setVoiceOutside(false);
     if (!preserveInvite) setInviteToken("");
     setNotice("");
+    setIdentityWarning("");
+    setIdentityBlocked(false);
   }, []);
 
-  const checkIdentity = useCallback(async () => {
-    if (logoutIntent.current) return;
-    const verification = ++checkSequence.current;
-    voiceReset.current();
-    identityVerified.current = false;
-    setChecking(true);
-    try {
-      const site = await request<FamilySiteStatus>("/api/family/status");
-      if (verification !== checkSequence.current) return;
-      setStatus(site);
-      if (!site.dbConfigured || site.needsSetup || !site.ready) {
-        clearPrivate();
-        setScreen(site.dbConfigured && site.needsSetup ? "setup" : "login");
-        return;
+  const checkIdentity = useCallback(
+    (options: { background?: boolean; force?: boolean } = {}) => {
+      if (logoutIntent.current) return Promise.resolve();
+      if (options.background && identityCheck.current)
+        return identityCheck.current;
+      if (
+        options.background &&
+        !options.force &&
+        Date.now() - lastBackgroundCheck.current < 2000
+      )
+        return Promise.resolve();
+      if (options.background) lastBackgroundCheck.current = Date.now();
+      const verification = ++checkSequence.current;
+      const background = !!options.background && !!currentUser.current;
+      if (!background) {
+        voiceReset.current();
+        setIdentityBlocked(!!currentUser.current);
       }
-      try {
-        const me = await request<FamilyMe>("/api/family/me");
-        if (verification !== checkSequence.current) return;
-        if (
-          currentUser.current &&
-          (currentUser.current.id !== me.user.id ||
-            currentUser.current.role !== me.user.role ||
-            me.user.status !== "approved")
-        )
-          clearPrivate();
-        currentUser.current = me.user;
-        identityVerified.current = me.user.status === "approved";
-        setUser(me.user);
-        setExpiresAt(me.sessionExpiresAt);
-        setScreen((previous) =>
-          me.user.status !== "approved"
-            ? "pending"
-            : previous === "admin" && me.user.role === "admin"
-            ? "admin"
-            : "chat",
-        );
-      } catch (failure) {
-        if (verification !== checkSequence.current) return;
-        if (
-          failure instanceof RequestError &&
-          [401, 403].includes(failure.status)
-        ) {
-          clearPrivate(!currentUser.current);
-          setScreen(registerRequested.current ? "register" : "login");
-          if (failure.status === 403) setError(failure.message);
-        } else throw failure;
-      }
-    } catch (failure) {
-      if (verification !== checkSequence.current) return;
-      if (!(failure instanceof StaleRequest)) {
-        // Do not keep private content visible after an unverified identity check.
-        clearPrivate();
-        setScreen("login");
-        setError("暂时无法确认登录状态，请检查网络后重新登录。");
-      }
-    } finally {
-      if (verification === checkSequence.current) setChecking(false);
-    }
-  }, [clearPrivate, request]);
+      // Keep the editor mounted during routine probes, but do not send private
+      // operations until the cookie's current identity has been confirmed.
+      identityVerified.current = false;
+      setChecking(true);
+      const deadline = Date.now() + 10000;
+      const timeout = () => Math.max(1, deadline - Date.now());
+      const pending = (async () => {
+        try {
+          const site = await request<FamilySiteStatus>(
+            "/api/family/status",
+            {},
+            timeout(),
+          );
+          if (verification !== checkSequence.current) return;
+          if (!site.dbConfigured || site.needsSetup || !site.ready) {
+            // A cold database or temporary outage is not evidence of logout.
+            if (currentUser.current) throw new Error("账号服务暂时不可用");
+            setStatus(site);
+            clearPrivate();
+            setScreen(site.dbConfigured && site.needsSetup ? "setup" : "login");
+            return;
+          }
+          setStatus(site);
+          try {
+            const me = await request<FamilyMe>("/api/family/me", {}, timeout());
+            if (verification !== checkSequence.current) return;
+            if (
+              currentUser.current &&
+              (currentUser.current.id !== me.user.id ||
+                currentUser.current.role !== me.user.role ||
+                me.user.status !== "approved")
+            )
+              clearPrivate();
+            currentUser.current = me.user;
+            identityVerified.current = me.user.status === "approved";
+            setUser(me.user);
+            setExpiresAt(me.sessionExpiresAt);
+            setIdentityBlocked(false);
+            setIdentityWarning("");
+            setScreen((previous) =>
+              me.user.status !== "approved"
+                ? "pending"
+                : previous === "admin" && me.user.role === "admin"
+                ? "admin"
+                : "chat",
+            );
+          } catch (failure) {
+            if (verification !== checkSequence.current) return;
+            if (
+              failure instanceof RequestError &&
+              [401, 403].includes(failure.status)
+            ) {
+              clearPrivate(!currentUser.current);
+              setScreen(registerRequested.current ? "register" : "login");
+              if (failure.status === 403) setError(failure.message);
+            } else throw failure;
+          }
+        } catch (failure) {
+          if (verification !== checkSequence.current) return;
+          if (!(failure instanceof StaleRequest)) {
+            if (currentUser.current) {
+              // Preserve account-scoped RAM on transport/service failures. Actions
+              // stay locked; a hard auth failure also keeps the private DOM hidden.
+              setIdentityWarning(
+                "登录状态暂时无法刷新，草稿和附件已保留。请检查网络后重试。",
+              );
+            } else {
+              setScreen("login");
+              setError("暂时无法确认登录状态，请检查网络后重试。");
+            }
+          }
+        } finally {
+          if (verification === checkSequence.current) {
+            identityCheck.current = null;
+            setChecking(false);
+          }
+        }
+      })();
+      identityCheck.current = pending;
+      return pending;
+    },
+    [clearPrivate, request],
+  );
   voiceRevalidate.current = () => {
     void checkIdentity();
   };
@@ -631,10 +679,12 @@ export function FamilyApp() {
       if (active && token && !currentUser.current) setInviteToken(token);
     });
     const verify = () => {
-      if (document.visibilityState === "visible") void checkIdentity();
+      if (document.visibilityState === "visible")
+        void checkIdentity({ background: true });
     };
     window.addEventListener("focus", verify);
     window.addEventListener("pageshow", verify);
+    window.addEventListener("online", verify);
     document.addEventListener("visibilitychange", verify);
     let lastEventId = "";
     const receive = (event: { kind?: string; id?: string }) => {
@@ -669,6 +719,8 @@ export function FamilyApp() {
     window.addEventListener("storage", receiveStorage);
     return () => {
       active = false;
+      checkSequence.current++;
+      identityCheck.current = null;
       epoch.current += 1;
       attachmentReset.current();
       voiceReset.current();
@@ -690,6 +742,7 @@ export function FamilyApp() {
       channel.current = null;
       window.removeEventListener("focus", verify);
       window.removeEventListener("pageshow", verify);
+      window.removeEventListener("online", verify);
       document.removeEventListener("visibilitychange", verify);
       window.removeEventListener("storage", receiveStorage);
     };
@@ -779,6 +832,7 @@ export function FamilyApp() {
   }, [editingMessage, checking]);
 
   const run = async (operation: () => Promise<void>) => {
+    if (currentUser.current && !identityVerified.current) return;
     const generation = epoch.current;
     setWorking(true);
     setError("");
@@ -876,6 +930,10 @@ export function FamilyApp() {
   };
 
   const selectChat = async (id: string) => {
+    if (id === selectedChatRef.current && activeChat?.id === id) {
+      setSidebarOpen(false);
+      return;
+    }
     attachmentReset.current();
     voiceReset.current();
     const version = ++listVersion.current;
@@ -1447,6 +1505,7 @@ export function FamilyApp() {
     chatId: string | null,
     admin = false,
   ): AttachmentScope => ({
+    readable: identityVerified.current,
     key: `${attachmentEpoch}:${attachmentOwner}:${
       admin ? "admin" : "owner"
     }:${chatId}`,
@@ -1473,9 +1532,9 @@ export function FamilyApp() {
     detailLoading ||
     lastAssistantMessage?.status === "streaming";
 
-  // Unmount private DOM during verification, including keyboard/reader targets.
-  // Account-scoped state remains in memory until identity is confirmed or reset.
-  if (screen === "loading" || (checking && approved))
+  // Only initial/hard checks replace the page. Routine focus checks must keep
+  // the file input, IME composition and editor DOM alive.
+  if (screen === "loading" || (identityBlocked && approved))
     return (
       <main
         className={styles.shell}
@@ -1483,7 +1542,20 @@ export function FamilyApp() {
         data-family-theme={appearance.theme.id}
       >
         <div className={styles.loading} role="status">
-          {screen === "loading" ? "正在确认登录状态…" : "正在重新确认登录状态…"}
+          {checking || screen === "loading" ? (
+            screen === "loading" ? (
+              "正在确认登录状态…"
+            ) : (
+              "正在重新确认登录状态…"
+            )
+          ) : (
+            <>
+              <p>{identityWarning}</p>
+              <button onClick={() => void checkIdentity()}>
+                重新检查登录状态
+              </button>
+            </>
+          )}
         </div>
       </main>
     );
@@ -1778,6 +1850,11 @@ export function FamilyApp() {
               sending || working || voice.busy || draftAttachments.preparing
             }
             onClick={() => {
+              if (selectedChatRef.current === null) {
+                setScreen("chat");
+                setSidebarOpen(false);
+                return;
+              }
               ++listVersion.current;
               setScreen("chat");
               setSelectedChat(null);
@@ -2039,6 +2116,19 @@ export function FamilyApp() {
           {notice ? (
             <div className={styles.bannerSuccess} role="status">
               {notice}
+            </div>
+          ) : null}
+          {identityWarning ? (
+            <div className={styles.bannerError} role="status">
+              {identityWarning}{" "}
+              <button
+                disabled={checking}
+                onClick={() =>
+                  void checkIdentity({ background: true, force: true })
+                }
+              >
+                重新检查登录状态
+              </button>
             </div>
           ) : null}
           {screen === "chat" && renameTitle !== null && activeChat ? (
@@ -2566,7 +2656,6 @@ export function FamilyApp() {
                     sending ||
                     cancelPending ||
                     working ||
-                    checking ||
                     detailLoading ||
                     voice.busy
                   }
@@ -2586,13 +2675,7 @@ export function FamilyApp() {
                   placeholder={editingMessage ? "修改上一条提问…" : "输入消息…"}
                   rows={2}
                   maxLength={12000}
-                  disabled={
-                    sending ||
-                    checking ||
-                    working ||
-                    detailLoading ||
-                    voice.busy
-                  }
+                  disabled={sending || working || detailLoading || voice.busy}
                   enterKeyHint="send"
                   onCompositionStart={() => {
                     composing.current = true;
@@ -2788,6 +2871,7 @@ export function FamilyApp() {
                         (!editingMessage &&
                           (draftAttachments.hasErrors || !!attachmentError)) ||
                         checking ||
+                        !identityVerified.current ||
                         working ||
                         detailLoading ||
                         cancelPending ||

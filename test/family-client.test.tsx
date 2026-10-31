@@ -12,6 +12,7 @@ import {
 import { FamilyApp } from "../app/family/client";
 import type { FamilyChatDetail, FamilyUser } from "../app/family/types";
 import { FAMILY_NOTICE } from "../app/family/types";
+import { FAMILY_SESSION_EVENT } from "../app/family/client-cleanup";
 import { ReadableStream as NodeReadableStream } from "node:stream/web";
 import { TextDecoder as NodeTextDecoder, TextEncoder } from "node:util";
 
@@ -85,6 +86,19 @@ describe("family client account isolation", () => {
   let identity: FamilyUser | null;
   let requestHandler: (path: string, init?: RequestInit) => Promise<Response>;
   let fetchMock: ReturnType<typeof makeFetchMock>;
+  const realDateNow = Date.now;
+  let identityClockOffset = 0;
+  function advanceIdentityCooldown() {
+    identityClockOffset += 3000;
+    jest
+      .spyOn(Date, "now")
+      .mockImplementation(() => realDateNow() + identityClockOffset);
+  }
+  function backgroundEvent(kind: "focus" | "pageshow" | "visible") {
+    if (kind === "focus") fireEvent.focus(window);
+    else if (kind === "pageshow") fireEvent(window, new Event("pageshow"));
+    else fireEvent(document, new Event("visibilitychange"));
+  }
   function makeFetchMock() {
     return jest.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
       requestHandler(String(input), init),
@@ -108,6 +122,7 @@ describe("family client account isolation", () => {
   beforeEach(() => {
     history.replaceState(null, "", "/");
     localStorage.clear();
+    identityClockOffset = 0;
     identity = memberA;
     requestHandler = async (path) => {
       if (path === "/api/family/status")
@@ -150,6 +165,8 @@ describe("family client account isolation", () => {
   });
   afterEach(() => {
     global.fetch = originalFetch;
+    jest.restoreAllMocks();
+    jest.useRealTimers();
   });
 
   test("login and signup omit the requested sentence and retain service status", async () => {
@@ -345,6 +362,7 @@ describe("family client account isolation", () => {
       fireEvent.click(screen.getByRole("button", { name: "导出 Markdown" }));
       await waitFor(() => expect(detailReads).toBe(2));
       identity = memberB;
+      advanceIdentityCooldown();
       fireEvent.focus(window);
       expect(await screen.findByText(memberB.name)).toBeInTheDocument();
       await act(async () => {
@@ -462,6 +480,7 @@ describe("family client account isolation", () => {
       ).toBe(true),
     );
     identity = memberB;
+    advanceIdentityCooldown();
     fireEvent.focus(window);
     expect(await screen.findByText("家人乙")).toBeInTheDocument();
     expect(
@@ -479,7 +498,7 @@ describe("family client account isolation", () => {
   });
 
   test.each(["chat", "admin"] as const)(
-    "%s private DOM is unmounted while revalidating and restored only for the same identity",
+    "%s DOM and its draft remain mounted during ordinary focus, pageshow and visible checks",
     async (view) => {
       if (view === "admin") identity = { ...memberA, role: "admin" };
       const baseHandler = requestHandler;
@@ -502,61 +521,497 @@ describe("family client account isolation", () => {
         }
         return baseHandler(path, init);
       };
-      const { container } = render(<FamilyApp />);
-      if (view === "chat") {
-        fireEvent.click(await screen.findByRole("button", { name: /聊天 a/ }));
-        expect(await screen.findByText("甲的私密回复")).toBeInTheDocument();
-        fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
-          target: { value: "同账号的未发送草稿" },
-        });
-      } else {
+      render(<FamilyApp />);
+      fireEvent.click(await screen.findByRole("button", { name: /聊天 a/ }));
+      expect(await screen.findByText("甲的私密回复")).toBeInTheDocument();
+      fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
+        target: { value: "同账号的未发送草稿" },
+      });
+      if (view === "admin") {
         fireEvent.click(
           await screen.findByRole("button", { name: "账户与用量管理" }),
         );
         expect(await screen.findByText("管理页私密账户")).toBeInTheDocument();
       }
-      let confirmIdentity!: (response: Response) => void;
-      const pendingIdentity = new Promise<Response>((resolve) => {
-        confirmIdentity = resolve;
-      });
-      const authenticatedHandler = requestHandler;
-      requestHandler = async (path, init) =>
-        path === "/api/family/me"
-          ? pendingIdentity
-          : authenticatedHandler(path, init);
-      fireEvent.focus(window);
-      expect(
-        await screen.findByText("正在重新确认登录状态…"),
-      ).toBeInTheDocument();
-      expect(container.textContent).not.toContain("甲的私密回复");
-      expect(container.textContent).not.toContain("管理页私密账户");
-      expect(container.textContent).not.toContain("a@example.test");
-      expect(
-        container.querySelectorAll("button,input,textarea,a"),
-      ).toHaveLength(0);
-      await waitFor(() =>
-        expect(
-          fetchMock.mock.calls.filter(([path]) => path === "/api/family/me")
-            .length,
-        ).toBeGreaterThan(1),
+      const privateNode = screen.getByText(
+        view === "chat" ? "甲的私密回复" : "管理页私密账户",
       );
-      await act(async () => {
-        confirmIdentity(
-          json({ user: identity, sessionExpiresAt: "2026-11-29T00:00:00Z" }),
+      const composer = screen.queryByRole("textbox", { name: "发送消息" });
+      const authenticatedHandler = requestHandler;
+      for (const trigger of ["focus", "pageshow", "visible"] as const) {
+        let confirmIdentity!: (response: Response) => void;
+        const pendingIdentity = new Promise<Response>((resolve) => {
+          confirmIdentity = resolve;
+        });
+        requestHandler = async (path, init) =>
+          path === "/api/family/me"
+            ? pendingIdentity
+            : authenticatedHandler(path, init);
+        const before = fetchMock.mock.calls.filter(
+          ([path]) => path === "/api/family/me",
+        ).length;
+        advanceIdentityCooldown();
+        backgroundEvent(trigger);
+        await waitFor(() =>
+          expect(
+            fetchMock.mock.calls.filter(([path]) => path === "/api/family/me")
+              .length,
+          ).toBe(before + 1),
         );
-        await pendingIdentity;
-      });
-      expect(
-        await screen.findByText(
-          view === "chat" ? "甲的私密回复" : "管理页私密账户",
-        ),
-      ).toBeInTheDocument();
-      if (view === "chat")
-        expect(screen.getByRole("textbox", { name: "发送消息" })).toHaveValue(
-          "同账号的未发送草稿",
-        );
+        expect(privateNode).toBeInTheDocument();
+        expect(
+          screen.getByText(view === "chat" ? "甲的私密回复" : "管理页私密账户"),
+        ).toBe(privateNode);
+        expect(
+          screen.queryByText("正在重新确认登录状态…"),
+        ).not.toBeInTheDocument();
+        if (view === "chat") {
+          expect(composer).toBeEnabled();
+          expect(screen.getByRole("textbox", { name: "发送消息" })).toBe(
+            composer,
+          );
+          expect(composer).toHaveValue("同账号的未发送草稿");
+        } else {
+          expect(
+            screen.getByRole("button", { name: "刷新统计" }),
+          ).toBeInTheDocument();
+        }
+        await act(async () => {
+          confirmIdentity(
+            json({ user: identity, sessionExpiresAt: "2026-11-29T00:00:00Z" }),
+          );
+          await pendingIdentity;
+        });
+        expect(privateNode).toBeInTheDocument();
+      }
+      if (view === "admin")
+        fireEvent.click(screen.getByRole("button", { name: "返回聊天" }));
+      expect(screen.getByRole("textbox", { name: "发送消息" })).toHaveValue(
+        "同账号的未发送草稿",
+      );
     },
   );
+
+  test.each([
+    ["/api/family/me", "network"],
+    ["/api/family/me", "503"],
+    ["/api/family/status", "network"],
+    ["/api/family/status", "503"],
+    ["/api/family/status", "cold-db"],
+  ] as const)(
+    "a transient %s %s failure preserves the conversation and can be checked again",
+    async (endpoint, failure) => {
+      render(<FamilyApp />);
+      fireEvent.click(await screen.findByRole("button", { name: /聊天 a/ }));
+      const reply = await screen.findByText("甲的私密回复");
+      const composer = screen.getByRole("textbox", { name: "发送消息" });
+      fireEvent.change(composer, { target: { value: "网络波动时的草稿" } });
+      const baseHandler = requestHandler;
+      let failed = false;
+      requestHandler = async (path, init) => {
+        if (path === endpoint) {
+          failed = true;
+          if (failure === "network") throw new TypeError("synthetic offline");
+          if (failure === "cold-db")
+            return json({
+              ready: false,
+              dbConfigured: true,
+              schemaReady: false,
+              needsSetup: false,
+              notice: FAMILY_NOTICE,
+            });
+          return json({ error: "synthetic unavailable" }, 503);
+        }
+        return baseHandler(path, init);
+      };
+      advanceIdentityCooldown();
+      await act(async () => {
+        backgroundEvent("focus");
+      });
+      expect(failed).toBe(true);
+      expect(reply).toBeInTheDocument();
+      expect(screen.getByRole("textbox", { name: "发送消息" })).toBe(composer);
+      expect(composer).toBeEnabled();
+      expect(composer).toHaveValue("网络波动时的草稿");
+      expect(
+        screen.queryByRole("button", { name: "登录" }),
+      ).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "发送 ↑" }));
+      expect(
+        fetchMock.mock.calls.some(
+          ([path]) => path === "/api/family/chats/a/messages",
+        ),
+      ).toBe(false);
+      expect(composer).toHaveValue("网络波动时的草稿");
+      requestHandler = baseHandler;
+      const before = fetchMock.mock.calls.filter(
+        ([path]) => path === "/api/family/me",
+      ).length;
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole("button", { name: "重新检查登录状态" }),
+        );
+      });
+      expect(
+        fetchMock.mock.calls.filter(([path]) => path === "/api/family/me")
+          .length,
+      ).toBe(before + 1);
+      expect(reply).toBeInTheDocument();
+      expect(composer).toHaveValue("网络波动时的草稿");
+      expect(screen.getByRole("button", { name: "发送 ↑" })).toBeEnabled();
+      requestHandler = async (path, init) =>
+        path === "/api/family/chats/a/messages"
+          ? json({ error: "synthetic send reached server" }, 503)
+          : baseHandler(path, init);
+      fireEvent.click(screen.getByRole("button", { name: "发送 ↑" }));
+      await waitFor(() =>
+        expect(
+          fetchMock.mock.calls.filter(
+            ([path]) => path === "/api/family/chats/a/messages",
+          ),
+        ).toHaveLength(1),
+      );
+      const sent = fetchMock.mock.calls.find(
+        ([path]) => path === "/api/family/chats/a/messages",
+      );
+      expect(JSON.parse(String(sent?.[1]?.body))).toMatchObject({
+        content: "网络波动时的草稿",
+        model: "model-fast",
+      });
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "synthetic send reached server",
+      );
+    },
+  );
+
+  test("focus, visible and pageshow bursts share one check and respect its cooldown", async () => {
+    render(<FamilyApp />);
+    expect(await screen.findByText(memberA.name)).toBeInTheDocument();
+    let confirmIdentity!: (response: Response) => void;
+    const pendingIdentity = new Promise<Response>((resolve) => {
+      confirmIdentity = resolve;
+    });
+    const baseHandler = requestHandler;
+    requestHandler = async (path, init) =>
+      path === "/api/family/me" ? pendingIdentity : baseHandler(path, init);
+    const calls = (path: string) =>
+      fetchMock.mock.calls.filter(([requested]) => requested === path).length;
+    const initialStatus = calls("/api/family/status");
+    const initialMe = calls("/api/family/me");
+    advanceIdentityCooldown();
+    await act(async () => {
+      backgroundEvent("focus");
+      backgroundEvent("visible");
+      backgroundEvent("pageshow");
+    });
+    expect(calls("/api/family/status")).toBe(initialStatus + 1);
+    expect(calls("/api/family/me")).toBe(initialMe + 1);
+    await act(async () => {
+      backgroundEvent("pageshow");
+      backgroundEvent("focus");
+      confirmIdentity(
+        json({ user: memberA, sessionExpiresAt: "2026-11-29T00:00:00Z" }),
+      );
+      await pendingIdentity;
+    });
+    await act(async () => {
+      backgroundEvent("visible");
+      backgroundEvent("focus");
+    });
+    expect(calls("/api/family/status")).toBe(initialStatus + 1);
+    expect(calls("/api/family/me")).toBe(initialMe + 1);
+    requestHandler = baseHandler;
+    advanceIdentityCooldown();
+    await act(async () => {
+      backgroundEvent("pageshow");
+    });
+    expect(calls("/api/family/status")).toBe(initialStatus + 2);
+    expect(calls("/api/family/me")).toBe(initialMe + 2);
+  });
+
+  test("a ten-second identity timeout aborts the check and permits a later successful check", async () => {
+    const view = render(<FamilyApp />);
+    fireEvent.click(await screen.findByRole("button", { name: /聊天 a/ }));
+    const reply = await screen.findByText("甲的私密回复");
+    const composer = screen.getByRole("textbox", { name: "发送消息" });
+    fireEvent.change(composer, { target: { value: "超时后仍保留的草稿" } });
+    const baseHandler = requestHandler;
+    const observed: { signal?: AbortSignal } = {};
+    let block = true;
+    requestHandler = async (path, init) => {
+      if (path === "/api/family/me" && block) {
+        observed.signal = init?.signal as AbortSignal;
+        return new Promise<Response>((_, reject) => {
+          const abort = () => reject(new DOMException("Aborted", "AbortError"));
+          if (observed.signal!.aborted) abort();
+          else
+            observed.signal!.addEventListener("abort", abort, { once: true });
+        });
+      }
+      return baseHandler(path, init);
+    };
+    jest.useFakeTimers();
+    try {
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(2100);
+        backgroundEvent("focus");
+      });
+      expect(observed.signal).toBeDefined();
+      expect(observed.signal!.aborted).toBe(false);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(10000);
+      });
+      expect(observed.signal!.aborted).toBe(true);
+      expect(reply).toBeInTheDocument();
+      expect(composer).toHaveValue("超时后仍保留的草稿");
+      block = false;
+      const before = fetchMock.mock.calls.filter(
+        ([path]) => path === "/api/family/me",
+      ).length;
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(2100);
+        backgroundEvent("pageshow");
+      });
+      expect(
+        fetchMock.mock.calls.filter(([path]) => path === "/api/family/me")
+          .length,
+      ).toBe(before + 1);
+      expect(screen.getByRole("textbox", { name: "发送消息" })).toBeEnabled();
+      expect(reply).toBeInTheDocument();
+    } finally {
+      view.unmount();
+      jest.useRealTimers();
+    }
+  });
+
+  test.each([401, 403])(
+    "an actual identity %s response clears private DOM and the unsent draft",
+    async (status) => {
+      render(<FamilyApp />);
+      fireEvent.click(await screen.findByRole("button", { name: /聊天 a/ }));
+      expect(await screen.findByText("甲的私密回复")).toBeInTheDocument();
+      fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
+        target: { value: "失效会话的私密草稿" },
+      });
+      const baseHandler = requestHandler;
+      requestHandler = async (path, init) =>
+        path === "/api/family/me"
+          ? json(
+              { error: status === 401 ? "会话已过期" : "账号已停用" },
+              status,
+            )
+          : baseHandler(path, init);
+      advanceIdentityCooldown();
+      backgroundEvent("focus");
+      expect(
+        await screen.findByRole("button", { name: "登录" }),
+      ).toBeInTheDocument();
+      expect(screen.queryByText("甲的私密回复")).not.toBeInTheDocument();
+      expect(screen.queryByText(memberA.name)).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("textbox", { name: "发送消息" }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /聊天 a/ }),
+      ).not.toBeInTheDocument();
+      if (status === 403)
+        expect(screen.getByRole("alert")).toHaveTextContent("账号已停用");
+    },
+  );
+
+  test("a late background success cannot unlock a protected 401 followed by a failed hard check", async () => {
+    render(<FamilyApp />);
+    fireEvent.click(await screen.findByRole("button", { name: /聊天 a/ }));
+    expect(await screen.findByText("甲的私密回复")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
+      target: { value: "锁屏后只应向同账号恢复的草稿" },
+    });
+    let finishProtectedRequest!: (response: Response) => void;
+    const protectedRequest = new Promise<Response>((resolve) => {
+      finishProtectedRequest = resolve;
+    });
+    let finishBackgroundCheck!: (response: Response) => void;
+    const backgroundCheck = new Promise<Response>((resolve) => {
+      finishBackgroundCheck = resolve;
+    });
+    const baseHandler = requestHandler;
+    let backgroundStarted = false;
+    let hardCheckUnavailable = false;
+    requestHandler = async (path, init) => {
+      if (path === "/api/family/chats/a") return protectedRequest;
+      if (path === "/api/family/status" && hardCheckUnavailable)
+        return json({ error: "synthetic hard-check unavailable" }, 503);
+      if (path === "/api/family/me" && !backgroundStarted) {
+        backgroundStarted = true;
+        return backgroundCheck;
+      }
+      return baseHandler(path, init);
+    };
+    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+    advanceIdentityCooldown();
+    backgroundEvent("focus");
+    await waitFor(() => expect(backgroundStarted).toBe(true));
+    hardCheckUnavailable = true;
+    await act(async () => {
+      finishProtectedRequest(json({ error: "synthetic protected 401" }, 401));
+      await protectedRequest;
+    });
+    expect(
+      await screen.findByRole("button", { name: "重新检查登录状态" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("甲的私密回复")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("textbox", { name: "发送消息" }),
+    ).not.toBeInTheDocument();
+    await act(async () => {
+      finishBackgroundCheck(
+        json({ user: memberA, sessionExpiresAt: "2026-11-29T00:00:00Z" }),
+      );
+      await backgroundCheck;
+    });
+    expect(screen.queryByText("甲的私密回复")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("textbox", { name: "发送消息" }),
+    ).not.toBeInTheDocument();
+    requestHandler = baseHandler;
+    fireEvent.click(screen.getByRole("button", { name: "重新检查登录状态" }));
+    expect(await screen.findByText("甲的私密回复")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "发送消息" })).toHaveValue(
+      "锁屏后只应向同账号恢复的草稿",
+    );
+  });
+
+  test("a cross-tab login overrides an older pending check and cannot resurrect A", async () => {
+    render(<FamilyApp />);
+    fireEvent.click(await screen.findByRole("button", { name: /聊天 a/ }));
+    expect(await screen.findByText("甲的私密回复")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
+      target: { value: "甲的私密草稿" },
+    });
+    let confirmOldIdentity!: (response: Response) => void;
+    const pendingIdentity = new Promise<Response>((resolve) => {
+      confirmOldIdentity = resolve;
+    });
+    const baseHandler = requestHandler;
+    let oldCheckStarted = false;
+    requestHandler = async (path, init) => {
+      if (path === "/api/family/me" && !oldCheckStarted) {
+        oldCheckStarted = true;
+        return pendingIdentity;
+      }
+      return baseHandler(path, init);
+    };
+    advanceIdentityCooldown();
+    backgroundEvent("focus");
+    await waitFor(() => expect(oldCheckStarted).toBe(true));
+    identity = memberB;
+    fireEvent(
+      window,
+      new StorageEvent("storage", {
+        key: FAMILY_SESSION_EVENT,
+        newValue: JSON.stringify({ kind: "login", id: "synthetic-login-b" }),
+      }),
+    );
+    expect(await screen.findByText(memberB.name)).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: /聊天 b/ }),
+    ).toBeInTheDocument();
+    await act(async () => {
+      confirmOldIdentity(
+        json({ user: memberA, sessionExpiresAt: "2026-11-29T00:00:00Z" }),
+      );
+      await pendingIdentity;
+    });
+    expect(screen.queryByText(memberA.name)).not.toBeInTheDocument();
+    expect(screen.queryByText("甲的私密回复")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /聊天 a/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "发送消息" })).toHaveValue("");
+  });
+
+  test("a cross-tab logout clears private DOM immediately without waiting for a network check", async () => {
+    const originalError = console.error;
+    jest.spyOn(console, "error").mockImplementation((...args) => {
+      if (String(args[0]).includes("Not implemented: navigation")) return;
+      originalError(...args);
+    });
+    render(<FamilyApp />);
+    fireEvent.click(await screen.findByRole("button", { name: /聊天 a/ }));
+    expect(await screen.findByText("甲的私密回复")).toBeInTheDocument();
+    const before = fetchMock.mock.calls.filter(
+      ([path]) => path === "/api/family/me",
+    ).length;
+    fireEvent(
+      window,
+      new StorageEvent("storage", {
+        key: FAMILY_SESSION_EVENT,
+        newValue: JSON.stringify({ kind: "logout", id: "synthetic-logout-a" }),
+      }),
+    );
+    expect(screen.queryByText("甲的私密回复")).not.toBeInTheDocument();
+    expect(screen.queryByText(memberA.name)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("textbox", { name: "发送消息" }),
+    ).not.toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.filter(([path]) => path === "/api/family/me").length,
+    ).toBe(before);
+    await act(async () => {});
+  });
+
+  test.each(["existing", "new"] as const)(
+    "reselecting the current %s conversation preserves its draft without rereading detail",
+    async (current) => {
+      render(<FamilyApp />);
+      const existing = await screen.findByRole("button", { name: /聊天 a/ });
+      if (current === "existing") {
+        fireEvent.click(existing);
+        expect(await screen.findByText("甲的私密回复")).toBeInTheDocument();
+      }
+      const composer = screen.getByRole("textbox", { name: "发送消息" });
+      fireEvent.change(composer, {
+        target: { value: "重复点击仍应保留的草稿" },
+      });
+      const before = fetchMock.mock.calls.length;
+      await act(async () => {
+        fireEvent.click(
+          current === "existing"
+            ? existing
+            : screen.getByRole("button", { name: "＋ 新聊天" }),
+        );
+      });
+      expect(composer).toHaveValue("重复点击仍应保留的草稿");
+      expect(fetchMock.mock.calls).toHaveLength(before);
+      if (current === "existing")
+        expect(screen.getByText("甲的私密回复")).toBeInTheDocument();
+    },
+  );
+
+  test("a failed detail read can be retried by selecting the current conversation again", async () => {
+    const baseHandler = requestHandler;
+    let detailReads = 0;
+    requestHandler = async (path, init) => {
+      if (path === "/api/family/chats/a" && ++detailReads === 1)
+        return json({ error: "synthetic detail unavailable" }, 503);
+      return baseHandler(path, init);
+    };
+    render(<FamilyApp />);
+    fireEvent.click(await screen.findByRole("button", { name: /聊天 a/ }));
+    expect(
+      await screen.findByRole("heading", { name: "聊天暂时没有加载成功" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "synthetic detail unavailable",
+    );
+    expect(detailReads).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: /聊天 a/ }));
+    expect(await screen.findByText("甲的私密回复")).toBeInTheDocument();
+    expect(detailReads).toBe(2);
+    expect(
+      screen.queryByRole("heading", { name: "聊天暂时没有加载成功" }),
+    ).not.toBeInTheDocument();
+  });
 
   test("archiving confirms before hiding the conversation", async () => {
     let archived = false;
@@ -574,14 +1029,10 @@ describe("family client account isolation", () => {
     fireEvent.click(await screen.findByRole("button", { name: /聊天 a/ }));
     expect(await screen.findByText("甲的私密回复")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "归档对话" }));
-    expect(
-      screen.getByText("归档后从你的列表隐藏。"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("归档后从你的列表隐藏。")).toBeInTheDocument();
     expect(archived).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "确认归档" }));
-    expect(
-      await screen.findByText("对话已归档。"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("对话已归档。")).toBeInTheDocument();
     expect(archived).toBe(true);
     expect(screen.queryByText("甲的私密回复")).not.toBeInTheDocument();
     expect(
@@ -723,16 +1174,27 @@ describe("family client account isolation", () => {
     expect(screen.queryByText(/回复未完成/)).not.toBeInTheDocument();
   });
 
-  test("an account-disabled SSE error immediately revalidates identity and removes private UI", async () => {
+  test("an account-disabled SSE error overrides a pending background check and ignores its late success", async () => {
     let revoked = false;
+    let holdBackground = false;
+    let backgroundStarted = false;
+    let finishReply!: (response: Response) => void;
+    const replyResponse = new Promise<Response>((resolve) => {
+      finishReply = resolve;
+    });
+    let finishOldCheck!: (response: Response) => void;
+    const oldCheck = new Promise<Response>((resolve) => {
+      finishOldCheck = resolve;
+    });
     const baseHandler = requestHandler;
     requestHandler = async (path, init) => {
       if (path === "/api/family/me" && revoked)
         return json({ error: "账号已停用，请联系管理员。" }, 403);
-      if (path === "/api/family/chats/a/messages") {
-        revoked = true;
-        return streamResponse([{ type: "error", message: "本次请求已停止。" }]);
+      if (path === "/api/family/me" && holdBackground && !backgroundStarted) {
+        backgroundStarted = true;
+        return oldCheck;
       }
+      if (path === "/api/family/chats/a/messages") return replyResponse;
       return baseHandler(path, init);
     };
     render(<FamilyApp />);
@@ -742,12 +1204,48 @@ describe("family client account isolation", () => {
       target: { value: "禁用期间的输入" },
     });
     fireEvent.click(screen.getByRole("button", { name: "发送 ↑" }));
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([path]) => path === "/api/family/chats/a/messages",
+        ),
+      ).toBe(true),
+    );
+    holdBackground = true;
+    advanceIdentityCooldown();
+    backgroundEvent("focus");
+    await waitFor(() => expect(backgroundStarted).toBe(true));
+    const beforeError = fetchMock.mock.calls.filter(
+      ([path]) => path === "/api/family/me",
+    ).length;
+    revoked = true;
+    await act(async () => {
+      finishReply(
+        streamResponse([{ type: "error", message: "本次请求已停止。" }]),
+      );
+      await replyResponse;
+    });
     expect(
       await screen.findByRole("button", { name: "登录" }),
     ).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.filter(([path]) => path === "/api/family/me").length,
+    ).toBe(beforeError + 1);
     expect(screen.getByRole("alert")).toHaveTextContent(
       "账号已停用，请联系管理员。",
     );
+    expect(screen.queryByText("甲的私密回复")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("textbox", { name: "发送消息" }),
+    ).not.toBeInTheDocument();
+    await act(async () => {
+      finishOldCheck(
+        json({ user: memberA, sessionExpiresAt: "2026-11-29T00:00:00Z" }),
+      );
+      await oldCheck;
+    });
+    expect(screen.getByRole("button", { name: "登录" })).toBeInTheDocument();
+    expect(screen.queryByText(memberA.name)).not.toBeInTheDocument();
     expect(screen.queryByText("甲的私密回复")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("textbox", { name: "发送消息" }),
