@@ -63,13 +63,40 @@ export function middleware(request: NextRequest) {
   // scripts. The family layout opts into dynamic rendering so it is never
   // served with a nonce from another request's static HTML.
   const nonce = btoa(crypto.randomUUID());
+  let websocketSource = "";
+  try {
+    const configured = new URL(
+      process.env.BETTER_AUTH_URL ||
+        (process.env.VERCEL_ENV === "preview" && process.env.VERCEL_URL
+          ? `https://${process.env.VERCEL_URL}`
+          : ""),
+    );
+    if (
+      !configured.username &&
+      !configured.password &&
+      configured.pathname === "/" &&
+      !configured.search &&
+      !configured.hash
+    ) {
+      if (configured.protocol === "https:")
+        websocketSource = ` wss://${configured.host}`;
+      else if (
+        process.env.NODE_ENV !== "production" &&
+        configured.protocol === "http:" &&
+        ["localhost", "127.0.0.1"].includes(configured.hostname)
+      )
+        websocketSource = ` ws://${configured.host}`;
+    }
+  } catch {
+    /* Missing trusted origin never grants arbitrary WebSocket access. */
+  }
   const csp = [
     "default-src 'self'",
     `script-src 'self' 'nonce-${nonce}'${
       process.env.NODE_ENV === "development" ? " 'unsafe-eval'" : ""
     }`,
     "style-src 'self' 'unsafe-inline'",
-    "connect-src 'self'",
+    `connect-src 'self'${websocketSource}`,
     "img-src 'self' data: blob:",
     "font-src 'self'",
     "frame-src 'none'",

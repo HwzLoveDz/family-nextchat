@@ -321,17 +321,23 @@ export async function recordActivity(userId: string, eventId: unknown) {
 export async function listUsers() {
   const result = await getPool()
     .query(`SELECT u.id,u.name,u.email,u.role,u.status,u."createdAt" AS created_at,a.last_seen_at,COALESCE(a.active_seconds,0) AS active_seconds,
-    COALESCE(g.input_tokens,0)+COALESCE(v.input_tokens,0) AS input_tokens,
-    COALESCE(g.output_tokens,0)+COALESCE(v.output_tokens,0) AS output_tokens,
-    COALESCE(g.unknown_requests,0)+COALESCE(v.unknown_requests,0) AS unknown_requests,
+    COALESCE(g.input_tokens,0)+COALESCE(v.input_tokens,0)+COALESCE(r.input_tokens,0) AS input_tokens,
+    COALESCE(g.output_tokens,0)+COALESCE(v.output_tokens,0)+COALESCE(r.output_tokens,0) AS output_tokens,
+    COALESCE(g.unknown_requests,0)+COALESCE(v.unknown_requests,0)+COALESCE(r.unknown_requests,0) AS unknown_requests,
     COALESCE(v.requests,0) AS voice_requests,COALESCE(v.input_tokens,0) AS voice_input_tokens,
     COALESCE(v.output_tokens,0) AS voice_output_tokens,COALESCE(v.unknown_requests,0) AS voice_unknown_requests,
-    COALESCE(v.audio_seconds,0) AS voice_audio_seconds
+    COALESCE(v.audio_seconds,0) AS voice_audio_seconds,
+    COALESCE(r.requests,0) AS realtime_requests,COALESCE(r.input_tokens,0) AS realtime_input_tokens,
+    COALESCE(r.output_tokens,0) AS realtime_output_tokens,COALESCE(r.unknown_requests,0) AS realtime_unknown_requests,
+    COALESCE(d.audio_seconds,0) AS realtime_audio_seconds
     FROM "user" u LEFT JOIN family_activity a ON a.user_id=u.id LEFT JOIN
-    (SELECT user_id,SUM(input_tokens) AS input_tokens,SUM(output_tokens) AS output_tokens,COUNT(*) FILTER(WHERE usage_source='unknown') AS unknown_requests FROM family_generation GROUP BY user_id) g ON g.user_id=u.id
+    (SELECT user_id,SUM(input_tokens) AS input_tokens,SUM(output_tokens) AS output_tokens,COUNT(*) FILTER(WHERE usage_source='unknown') AS unknown_requests FROM family_generation WHERE kind='text' GROUP BY user_id) g ON g.user_id=u.id
     LEFT JOIN (SELECT user_id,COUNT(*) AS requests,SUM(input_tokens) AS input_tokens,SUM(output_tokens) AS output_tokens,
       COUNT(*) FILTER(WHERE usage_source='unknown') AS unknown_requests,SUM(audio_seconds) AS audio_seconds
       FROM family_voice_usage GROUP BY user_id) v ON v.user_id=u.id
+    LEFT JOIN (SELECT user_id,COUNT(*) AS requests,SUM(input_tokens) AS input_tokens,SUM(output_tokens) AS output_tokens,
+      COUNT(*) FILTER(WHERE usage_source='unknown') AS unknown_requests FROM family_realtime_usage GROUP BY user_id) r ON r.user_id=u.id
+    LEFT JOIN (SELECT user_id,SUM(input_audio_seconds) AS audio_seconds FROM family_realtime_call GROUP BY user_id) d ON d.user_id=u.id
     ORDER BY u."createdAt" DESC LIMIT 200`);
   return result.rows.map((row) => ({
     id: row.id,
@@ -350,5 +356,10 @@ export async function listUsers() {
     voiceOutputTokens: Number(row.voice_output_tokens),
     voiceUnknownUsageRequests: Number(row.voice_unknown_requests),
     voiceAudioSeconds: Number(row.voice_audio_seconds),
+    realtimeRequests: Number(row.realtime_requests ?? 0),
+    realtimeInputTokens: Number(row.realtime_input_tokens ?? 0),
+    realtimeOutputTokens: Number(row.realtime_output_tokens ?? 0),
+    realtimeUnknownUsageRequests: Number(row.realtime_unknown_requests ?? 0),
+    realtimeAudioSeconds: Number(row.realtime_audio_seconds ?? 0),
   }));
 }

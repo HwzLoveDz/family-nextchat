@@ -133,13 +133,13 @@ describe("family application upgrade boundaries", () => {
       poolQuery.mock.calls.every(([sql]) => /^SELECT\b/.test(sql.trim())),
     ).toBe(true);
     expect(clientQuery).not.toHaveBeenCalled();
-    expect(poolQuery.mock.calls[0][0]).toContain("count(*) = 41");
+    expect(poolQuery.mock.calls[0][0]).toContain("count(*) = 94");
     expect(poolQuery.mock.calls[0][0]).toContain(
       "('family_generation','cancel_requested_at','timestamp with time zone','YES')",
     );
   });
 
-  test.each([undefined, 0, 1, 2, 3, "4", -1])(
+  test.each([undefined, 0, 1, 2, 3, 4, "5", -1])(
     "missing, old, or invalid version %p cannot pass readiness",
     async (version) => {
       poolQuery
@@ -155,10 +155,10 @@ describe("family application upgrade boundaries", () => {
     },
   );
 
-  test("a complete v4 schema is accepted through SELECTs alone", async () => {
+  test("a complete v5 schema is accepted through SELECTs alone", async () => {
     poolQuery
       .mockResolvedValueOnce(readyMetadata())
-      .mockResolvedValueOnce(result([{ version: 4 }]));
+      .mockResolvedValueOnce(result([{ version: 5 }]));
     await expect(
       upgrades.requireFamilyApplicationUpgrade(),
     ).resolves.toBeUndefined();
@@ -398,6 +398,7 @@ describe("family application upgrade boundaries", () => {
     clientQuery.mockImplementation(async (sql, values) => {
       if (["BEGIN", "COMMIT", "ROLLBACK"].includes(sql)) return result();
       if (sql.startsWith("SELECT pg_advisory_xact_lock")) return result();
+      if (sql.startsWith("SELECT 1 FROM family_realtime_call")) return result();
       if (sql.startsWith("SELECT * FROM family_chat")) {
         expect(sql).toContain("user_id=$2 AND deleted_at IS NULL FOR UPDATE");
         expect(values).toEqual([chatId, userId]);

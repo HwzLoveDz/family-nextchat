@@ -2,7 +2,7 @@ import "server-only";
 import { getPool, transaction } from "./db";
 import { FamilyApiError } from "./errors";
 
-export const FAMILY_APPLICATION_SCHEMA_VERSION = 4;
+export const FAMILY_APPLICATION_SCHEMA_VERSION = 5;
 
 /** Application-only, additive upgrade. The caller owns the transaction and schema lock. */
 export const FAMILY_APPLICATION_UPGRADE_SQL = String.raw`
@@ -72,12 +72,88 @@ CREATE TABLE IF NOT EXISTS family_message_attachment (
   FOREIGN KEY(attachment_id,chat_id) REFERENCES family_attachment(id,chat_id)
 );
 CREATE INDEX IF NOT EXISTS family_message_attachment_file ON family_message_attachment(attachment_id);
+ALTER TABLE family_generation ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'text'
+  CHECK(kind IN ('text','realtime'));
+CREATE TABLE IF NOT EXISTS family_realtime_call (
+  id uuid PRIMARY KEY,
+  user_id text NOT NULL REFERENCES "user"(id),
+  -- Audit survives logout/session revocation; this is a trusted ID, not a cookie/token.
+  session_id text NOT NULL,
+  chat_id uuid NOT NULL,
+  request_id uuid NOT NULL,
+  request_hash text NOT NULL,
+  model text NOT NULL,
+  voice text NOT NULL CHECK(voice IN ('marin','cedar','coral','sage')),
+  vad text NOT NULL CHECK(vad IN ('natural','fast')),
+  state text NOT NULL DEFAULT 'active' CHECK(state IN ('active','ended')),
+  connection_id uuid,
+  lease_expires_at timestamptz NOT NULL,
+  started_at timestamptz NOT NULL DEFAULT now(),
+  expires_at timestamptz NOT NULL,
+  ended_at timestamptz,
+  end_reason text,
+  turn_count integer NOT NULL DEFAULT 0 CHECK(turn_count BETWEEN 0 AND 100),
+  input_audio_seconds double precision CHECK(input_audio_seconds IS NULL OR (input_audio_seconds>=0 AND input_audio_seconds<=3600)),
+  UNIQUE(user_id,request_id), UNIQUE(id,user_id),
+  FOREIGN KEY(chat_id,user_id) REFERENCES family_chat(id,user_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS family_realtime_one_user ON family_realtime_call(user_id) WHERE state='active';
+CREATE UNIQUE INDEX IF NOT EXISTS family_realtime_one_chat ON family_realtime_call(chat_id) WHERE state='active';
+CREATE INDEX IF NOT EXISTS family_realtime_expiry ON family_realtime_call(state,lease_expires_at);
+CREATE TABLE IF NOT EXISTS family_realtime_turn (
+  id uuid PRIMARY KEY,
+  call_id uuid NOT NULL REFERENCES family_realtime_call(id),
+  connection_id uuid NOT NULL,
+  input_item_id text NOT NULL CHECK(length(input_item_id) BETWEEN 1 AND 200),
+  generation_id uuid NOT NULL UNIQUE REFERENCES family_generation(id),
+  user_message_id uuid NOT NULL REFERENCES family_message(id),
+  assistant_message_id uuid NOT NULL REFERENCES family_message(id),
+  response_id text CHECK(length(response_id) BETWEEN 1 AND 200),
+  output_item_id text CHECK(length(output_item_id) BETWEEN 1 AND 200),
+  state text NOT NULL DEFAULT 'running' CHECK(state IN ('running','complete','partial','error')),
+  transcript_recorded boolean NOT NULL DEFAULT false,
+  interrupted boolean NOT NULL DEFAULT false,
+  heard_complete boolean NOT NULL DEFAULT false,
+  UNIQUE(call_id,input_item_id), UNIQUE(call_id,response_id), UNIQUE(id,call_id)
+);
+CREATE TABLE IF NOT EXISTS family_realtime_usage (
+  id uuid PRIMARY KEY,
+  call_id uuid NOT NULL,
+  turn_id uuid NOT NULL,
+  user_id text NOT NULL,
+  kind text NOT NULL CHECK(kind IN ('response','transcribe')),
+  provider_id text CHECK(length(provider_id) BETWEEN 1 AND 200),
+  state text NOT NULL DEFAULT 'running' CHECK(state IN ('running','complete','partial','error')),
+  requested_model text NOT NULL,
+  actual_model text,
+  input_tokens bigint CHECK(input_tokens IS NULL OR input_tokens>=0),
+  output_tokens bigint CHECK(output_tokens IS NULL OR output_tokens>=0),
+  usage_source text NOT NULL DEFAULT 'unknown' CHECK(usage_source IN ('unknown','reported')),
+  reported_audio_seconds double precision CHECK(reported_audio_seconds IS NULL OR (reported_audio_seconds>=0 AND reported_audio_seconds<=1800)),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  finished_at timestamptz,
+  UNIQUE(turn_id,kind), UNIQUE(call_id,kind,provider_id),
+  FOREIGN KEY(call_id,user_id) REFERENCES family_realtime_call(id,user_id),
+  FOREIGN KEY(turn_id,call_id) REFERENCES family_realtime_turn(id,call_id),
+  CHECK((usage_source='unknown' AND input_tokens IS NULL AND output_tokens IS NULL)
+    OR (usage_source='reported' AND input_tokens IS NOT NULL AND output_tokens IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS family_realtime_usage_owner ON family_realtime_usage(user_id,created_at);
+CREATE TABLE IF NOT EXISTS family_realtime_playback (
+  call_id uuid NOT NULL REFERENCES family_realtime_call(id),
+  connection_id uuid NOT NULL,
+  output_item_id text NOT NULL CHECK(length(output_item_id) BETWEEN 1 AND 200),
+  played_ms integer NOT NULL CHECK(played_ms BETWEEN 0 AND 1800000),
+  heard_complete boolean NOT NULL DEFAULT false,
+  interrupted boolean NOT NULL DEFAULT false,
+  PRIMARY KEY(call_id,connection_id,output_item_id)
+);
 CREATE TABLE IF NOT EXISTS family_schema_version (
   id integer PRIMARY KEY CHECK (id = 1),
   version integer NOT NULL CHECK (version >= 0),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
-INSERT INTO family_schema_version(id,version) VALUES(1,4)
+INSERT INTO family_schema_version(id,version) VALUES(1,5)
 ON CONFLICT(id) DO UPDATE
   SET version=GREATEST(family_schema_version.version,EXCLUDED.version),updated_at=now();`;
 
@@ -107,7 +183,7 @@ export async function applicationUpgradeStatus(): Promise<{
   const metadata = (
     await pool.query(`SELECT
       to_regclass('family_schema_version') IS NOT NULL AS version_table_exists,
-      (SELECT count(*) = 41 FROM information_schema.columns
+      (SELECT count(*) = 94 FROM information_schema.columns
         WHERE table_schema = current_schema()
           AND (table_name,column_name,data_type,is_nullable) IN (
             ('family_chat','model','text','YES'),
@@ -150,7 +226,60 @@ export async function applicationUpgradeStatus(): Promise<{
             ('family_message_attachment','message_id','uuid','NO'),
             ('family_message_attachment','attachment_id','uuid','NO'),
             ('family_message_attachment','chat_id','uuid','NO'),
-            ('family_message_attachment','position','integer','NO')
+            ('family_message_attachment','position','integer','NO'),
+            ('family_generation','kind','text','NO'),
+            ('family_realtime_call','id','uuid','NO'),
+            ('family_realtime_call','user_id','text','NO'),
+            ('family_realtime_call','session_id','text','NO'),
+            ('family_realtime_call','chat_id','uuid','NO'),
+            ('family_realtime_call','request_id','uuid','NO'),
+            ('family_realtime_call','request_hash','text','NO'),
+            ('family_realtime_call','model','text','NO'),
+            ('family_realtime_call','voice','text','NO'),
+            ('family_realtime_call','vad','text','NO'),
+            ('family_realtime_call','state','text','NO'),
+            ('family_realtime_call','connection_id','uuid','YES'),
+            ('family_realtime_call','lease_expires_at','timestamp with time zone','NO'),
+            ('family_realtime_call','started_at','timestamp with time zone','NO'),
+            ('family_realtime_call','expires_at','timestamp with time zone','NO'),
+            ('family_realtime_call','ended_at','timestamp with time zone','YES'),
+            ('family_realtime_call','end_reason','text','YES'),
+            ('family_realtime_call','turn_count','integer','NO'),
+            ('family_realtime_call','input_audio_seconds','double precision','YES'),
+            ('family_realtime_turn','id','uuid','NO'),
+            ('family_realtime_turn','call_id','uuid','NO'),
+            ('family_realtime_turn','connection_id','uuid','NO'),
+            ('family_realtime_turn','input_item_id','text','NO'),
+            ('family_realtime_turn','generation_id','uuid','NO'),
+            ('family_realtime_turn','user_message_id','uuid','NO'),
+            ('family_realtime_turn','assistant_message_id','uuid','NO'),
+            ('family_realtime_turn','response_id','text','YES'),
+            ('family_realtime_turn','output_item_id','text','YES'),
+            ('family_realtime_turn','state','text','NO'),
+            ('family_realtime_turn','transcript_recorded','boolean','NO'),
+            ('family_realtime_turn','interrupted','boolean','NO'),
+            ('family_realtime_turn','heard_complete','boolean','NO'),
+            ('family_realtime_usage','id','uuid','NO'),
+            ('family_realtime_usage','call_id','uuid','NO'),
+            ('family_realtime_usage','turn_id','uuid','NO'),
+            ('family_realtime_usage','user_id','text','NO'),
+            ('family_realtime_usage','kind','text','NO'),
+            ('family_realtime_usage','provider_id','text','YES'),
+            ('family_realtime_usage','state','text','NO'),
+            ('family_realtime_usage','requested_model','text','NO'),
+            ('family_realtime_usage','actual_model','text','YES'),
+            ('family_realtime_usage','input_tokens','bigint','YES'),
+            ('family_realtime_usage','output_tokens','bigint','YES'),
+            ('family_realtime_usage','usage_source','text','NO'),
+            ('family_realtime_usage','reported_audio_seconds','double precision','YES'),
+            ('family_realtime_usage','created_at','timestamp with time zone','NO'),
+            ('family_realtime_usage','finished_at','timestamp with time zone','YES'),
+            ('family_realtime_playback','call_id','uuid','NO'),
+            ('family_realtime_playback','connection_id','uuid','NO'),
+            ('family_realtime_playback','output_item_id','text','NO'),
+            ('family_realtime_playback','played_ms','integer','NO'),
+            ('family_realtime_playback','heard_complete','boolean','NO'),
+            ('family_realtime_playback','interrupted','boolean','NO')
           )) AS columns_ready`)
   ).rows[0];
   if (metadata?.version_table_exists !== true)

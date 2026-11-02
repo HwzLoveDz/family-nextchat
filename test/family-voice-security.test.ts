@@ -298,11 +298,16 @@ describe("voice admission, privacy, and usage ledger", () => {
       voiceAudioSeconds: 4.5,
     });
     const sql = query.mock.calls[0][0];
-    expect(sql.match(/GROUP BY user_id/g) || []).toHaveLength(2);
+    // Text, old voice, realtime usage and measured realtime duration each
+    // aggregate independently before joining users, preventing cross products.
+    expect(sql.match(/GROUP BY user_id/g) || []).toHaveLength(4);
+    expect(sql).toContain(
+      "family_generation WHERE kind='text' GROUP BY user_id",
+    );
+    expect(sql).toContain("family_realtime_usage GROUP BY user_id");
     expect(sql).toContain(
       "COALESCE(g.input_tokens,0)+COALESCE(v.input_tokens,0)",
     );
     expect(sql).not.toContain("JOIN family_voice_usage");
   });
-
 });

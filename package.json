@@ -32,6 +32,7 @@
     "@next/third-parties": "15.5.28",
     "@svgr/webpack": "^6.5.1",
     "@vercel/analytics": "^0.1.11",
+    "@vercel/functions": "3.10.5",
     "@vercel/speed-insights": "^1.0.2",
     "axios": "1.21.0",
     "better-auth": "1.7.14",

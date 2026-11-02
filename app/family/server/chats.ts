@@ -6,6 +6,7 @@ import { getPool, transaction } from "./db";
 import { FamilyApiError, digest, text } from "./errors";
 import { PRIVATE_API_HEADERS } from "../enabled";
 import { OpenAIStreamDecoder } from "./openai-stream";
+import { assertNoRealtimeCall, lockRealtimeChat } from "./realtime-ledger";
 import {
   configuredProviderKeys,
   rejectExhaustedQuota,
@@ -113,11 +114,13 @@ export async function updateChat(
   )
     throw new FamilyApiError(400, "请提供对话名称或列表中的模型。");
   return transaction(async (client) => {
+    await lockRealtimeChat(client, userId, chatId);
     const owner = await client.query(
       "SELECT * FROM family_chat WHERE id=$1 AND user_id=$2 AND deleted_at IS NULL FOR UPDATE",
       [chatId, userId],
     );
     if (!owner.rowCount) throw new FamilyApiError(404, "对话不存在。");
+    await assertNoRealtimeCall(client, userId, chatId);
     const title =
       body.title === undefined
         ? owner.rows[0].title
@@ -184,11 +187,13 @@ export async function chatDetail(
 export async function deleteChat(chatId: string, userId: string) {
   validId(chatId);
   await transaction(async (client) => {
+    await lockRealtimeChat(client, userId, chatId);
     const row = await client.query(
       "SELECT id FROM family_chat WHERE id=$1 AND user_id=$2 AND deleted_at IS NULL FOR UPDATE",
       [chatId, userId],
     );
     if (!row.rowCount) throw new FamilyApiError(404, "对话不存在。");
+    await assertNoRealtimeCall(client, userId, chatId);
     if (
       (
         await client.query(
@@ -349,14 +354,13 @@ async function prepare(
   intent: GenerationIntent,
   requestId: string,
 ): Promise<GenerationStart> {
-  await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
-    "family-generation:" + userId,
-  ]);
+  await lockRealtimeChat(client, userId, chatId);
   const owner = await client.query(
     "SELECT * FROM family_chat WHERE id=$1 AND user_id=$2 AND deleted_at IS NULL FOR UPDATE",
     [chatId, userId],
   );
   if (!owner.rowCount) throw new FamilyApiError(404, "对话不存在。");
+  await assertNoRealtimeCall(client, userId, chatId);
   const existing = (
     await client.query(
       "SELECT *,EXISTS(SELECT 1 FROM family_message m JOIN family_message_attachment l ON l.message_id=m.id WHERE m.generation_id=family_generation.id) AS has_attachments FROM family_generation WHERE user_id=$1 AND request_id=$2",
@@ -522,7 +526,7 @@ async function prepare(
     throw new FamilyApiError(400, "这段对话已较长，请新建对话。");
   const previous = (
     await client.query(
-      "SELECT m.id,m.generation_id,m.role,m.content FROM family_message m JOIN family_generation g ON g.id=m.generation_id WHERE m.chat_id=$1 AND g.state='complete' AND m.status='complete' AND g.superseded_at IS NULL AND ($2::uuid IS NULL OR g.id<>$2) ORDER BY m.position DESC LIMIT 40",
+      "SELECT m.id,m.generation_id,m.role,m.content FROM family_message m JOIN family_generation g ON g.id=m.generation_id LEFT JOIN family_realtime_turn rt ON rt.generation_id=g.id WHERE m.chat_id=$1 AND g.state='complete' AND m.status='complete' AND g.superseded_at IS NULL AND (g.kind='text' OR m.role='user' OR (rt.heard_complete AND NOT rt.interrupted)) AND ($2::uuid IS NULL OR g.id<>$2) ORDER BY m.position DESC LIMIT 40",
       [chatId, sourceGeneration],
     )
   ).rows;

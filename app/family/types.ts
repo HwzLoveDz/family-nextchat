@@ -124,6 +124,11 @@ export interface FamilyAdminUser extends FamilyUser {
   voiceUnknownUsageRequests?: number;
   /** Measured canonical PCM duration; this is not a billable quantity. */
   voiceAudioSeconds?: number;
+  realtimeRequests?: number;
+  realtimeInputTokens?: number;
+  realtimeOutputTokens?: number;
+  realtimeUnknownUsageRequests?: number;
+  realtimeAudioSeconds?: number;
 }
 export interface FamilyVoiceTranscription {
   text: string;

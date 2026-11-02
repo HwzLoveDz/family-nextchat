@@ -33,6 +33,8 @@ import {
 } from "./client-cleanup";
 import styles from "./family.module.scss";
 import { useFamilyVoice, type VoiceScope } from "./use-family-voice";
+import { useFamilyRealtime } from "./use-family-realtime";
+import { RealtimePanel } from "./realtime-panel";
 import { useFamilyViewport } from "./use-family-viewport";
 import { useFamilyTheme } from "./use-family-theme";
 import { ThemeSettings } from "./theme-settings";
@@ -405,6 +407,11 @@ export function FamilyApp() {
   );
   attachmentReset.current = draftAttachments.clear;
   const voiceReset = useRef<() => void>(() => {});
+  const realtimeReset = useRef<() => void>(() => {});
+  const realtimeBusy = useRef(false);
+  const realtimeFinished = useRef<(chatId: string) => void>(() => {});
+  const realtimeSyncTimer = useRef<number | null>(null);
+  const realtimeSyncVersion = useRef(0);
   const voiceSubmit = useRef<
     (text: string, scope: VoiceScope) => void | Promise<void>
   >(() => {});
@@ -427,6 +434,7 @@ export function FamilyApp() {
         !cancelPending &&
         !working &&
         !checking &&
+        !realtimeBusy.current &&
         !detailLoading &&
         status?.schemaReady !== false &&
         models.some((model) => model.id === selectedModel),
@@ -436,6 +444,36 @@ export function FamilyApp() {
     onUnauthorized: () => voiceRevalidate.current(),
   });
   voiceReset.current = voice.reset;
+  const realtime = useFamilyRealtime({
+    getScope: () => ({
+      epoch: epoch.current,
+      userId: currentUser.current?.id ?? null,
+      chatId: selectedChatRef.current,
+      verified: identityVerified.current,
+      canStart:
+        screen === "chat" &&
+        !voice.busy &&
+        !sending &&
+        !working &&
+        !checking &&
+        !cancelPending &&
+        !detailLoading &&
+        !editingMessage &&
+        !draftAttachments.preparing &&
+        status?.schemaReady !== false &&
+        !messages.some(
+          (message) =>
+            message.role === "assistant" &&
+            message.status === "streaming" &&
+            !message.superseded,
+        ),
+    }),
+    onError: (message) => setError(message),
+    onUnauthorized: () => voiceRevalidate.current(),
+    onFinished: (chatId) => realtimeFinished.current(chatId),
+  });
+  realtimeReset.current = realtime.reset;
+  realtimeBusy.current = realtime.busy;
 
   const request = useCallback(
     async <T,>(
@@ -488,6 +526,11 @@ export function FamilyApp() {
     epoch.current += 1;
     attachmentReset.current();
     voiceReset.current();
+    realtimeReset.current();
+    realtimeSyncVersion.current++;
+    if (realtimeSyncTimer.current !== null)
+      window.clearTimeout(realtimeSyncTimer.current);
+    realtimeSyncTimer.current = null;
     listVersion.current += 1;
     adminVersion.current += 1;
     controllers.current.forEach((controller) => controller.abort());
@@ -563,6 +606,7 @@ export function FamilyApp() {
       const background = !!options.background && !!currentUser.current;
       if (!background) {
         voiceReset.current();
+        realtimeReset.current();
         setIdentityBlocked(!!currentUser.current);
       }
       // Keep the editor mounted during routine probes, but do not send private
@@ -727,6 +771,11 @@ export function FamilyApp() {
       epoch.current += 1;
       attachmentReset.current();
       voiceReset.current();
+      realtimeReset.current();
+      realtimeSyncVersion.current++;
+      if (realtimeSyncTimer.current !== null)
+        window.clearTimeout(realtimeSyncTimer.current);
+      realtimeSyncTimer.current = null;
       controllers.current.forEach((controller) => controller.abort());
       controllers.current.clear();
       activeGeneration.current = null;
@@ -835,6 +884,7 @@ export function FamilyApp() {
   }, [editingMessage, checking]);
 
   const run = async (operation: () => Promise<void>) => {
+    if (realtimeBusy.current) return;
     if (currentUser.current && !identityVerified.current) return;
     const generation = epoch.current;
     setWorking(true);
@@ -1063,6 +1113,7 @@ export function FamilyApp() {
       draftAttachments.preparing ||
       (mode === "send" && draftAttachments.hasErrors) ||
       sending ||
+      realtimeBusy.current ||
       checking ||
       detailLoading ||
       streamController.current ||
@@ -1476,6 +1527,75 @@ export function FamilyApp() {
     setScreen("admin");
     setSidebarOpen(false);
   };
+  realtimeFinished.current = (chatId) => {
+    const generation = epoch.current;
+    const version = ++realtimeSyncVersion.current;
+    if (realtimeSyncTimer.current !== null)
+      window.clearTimeout(realtimeSyncTimer.current);
+    realtimeSyncTimer.current = null;
+    void loadChats().catch((failure) => {
+      if (generation === epoch.current && !(failure instanceof StaleRequest))
+        setNotice("通话已结束，请稍后刷新聊天列表。");
+    });
+    const mayOpenNew =
+      selectedChatRef.current === null &&
+      !draft.trim() &&
+      !draftAttachments.hasAny();
+    if (selectedChatRef.current !== chatId && !mayOpenNew) return;
+    const synchronize = (attempt: number) => {
+      void request<FamilyChatDetail>(
+        `/api/family/chats/${encodeURIComponent(chatId)}`,
+        {},
+        4000,
+      )
+        .then((detail) => {
+          if (
+            generation !== epoch.current ||
+            streamController.current ||
+            realtimeBusy.current ||
+            version !== realtimeSyncVersion.current
+          )
+            return;
+          if (
+            detail.messages.some((message) => message.status === "streaming") &&
+            attempt < 3
+          ) {
+            realtimeSyncTimer.current = window.setTimeout(
+              () => {
+                realtimeSyncTimer.current = null;
+                synchronize(attempt + 1);
+              },
+              500 * (attempt + 1),
+            );
+            return;
+          }
+          if (
+            selectedChatRef.current !== chatId &&
+            !(
+              mayOpenNew &&
+              selectedChatRef.current === null &&
+              !composerInput.current?.value &&
+              !draftAttachments.hasAny()
+            )
+          )
+            return;
+          selectedChatRef.current = chatId;
+          setSelectedChat(chatId);
+          setActiveChat(detail.chat);
+          setMessages(detail.messages);
+          setSelectedModel(detail.chat.model || defaultModel.current);
+        })
+        .catch((failure) => {
+          if (
+            generation === epoch.current &&
+            version === realtimeSyncVersion.current &&
+            !(failure instanceof StaleRequest)
+          )
+            setNotice("通话已结束，记录暂时无法同步，请稍后刷新确认。");
+        });
+    };
+    synchronize(0);
+  };
   const inspectUser = async (account: FamilyAdminUser) => {
     const version = ++adminVersion.current;
     setAdminSelectedUser(account);
@@ -1533,6 +1653,7 @@ export function FamilyApp() {
     working ||
     cancelPending ||
     voice.busy ||
+    realtimeBusy.current ||
     draftAttachments.preparing ||
     detailLoading ||
     lastAssistantMessage?.status === "streaming";
@@ -1852,7 +1973,11 @@ export function FamilyApp() {
           </div>
           <button
             disabled={
-              sending || working || voice.busy || draftAttachments.preparing
+              sending ||
+              working ||
+              voice.busy ||
+              realtimeBusy.current ||
+              draftAttachments.preparing
             }
             onClick={() => {
               if (selectedChatRef.current === null) {
@@ -1885,7 +2010,7 @@ export function FamilyApp() {
             <input
               type="search"
               value={search}
-              disabled={voice.busy}
+              disabled={voice.busy || realtimeBusy.current}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="搜索聊天标题"
             />
@@ -1916,6 +2041,7 @@ export function FamilyApp() {
                     sending ||
                     working ||
                     voice.busy ||
+                    realtimeBusy.current ||
                     draftAttachments.preparing
                   }
                   onClick={() => {
@@ -1943,7 +2069,11 @@ export function FamilyApp() {
               <button
                 className={styles.secondary}
                 disabled={
-                  sending || working || voice.busy || draftAttachments.preparing
+                  sending ||
+                  working ||
+                  voice.busy ||
+                  realtimeBusy.current ||
+                  draftAttachments.preparing
                 }
                 onClick={() => void run(openAdmin)}
               >
@@ -1967,7 +2097,7 @@ export function FamilyApp() {
             <button
               className={styles.mobileOnly}
               aria-label="打开会话列表"
-              disabled={voice.busy}
+              disabled={voice.busy || realtimeBusy.current}
               onClick={() => setSidebarOpen(true)}
             >
               会话
@@ -1986,7 +2116,9 @@ export function FamilyApp() {
             />
             {user.role === "admin" && screen !== "admin" ? (
               <button
-                disabled={sending || working || voice.busy}
+                disabled={
+                  sending || working || voice.busy || realtimeBusy.current
+                }
                 onClick={() => void run(openAdmin)}
               >
                 邀请家人
@@ -2005,8 +2137,14 @@ export function FamilyApp() {
               </button>
             ) : null}
           </header>
+          {screen === "chat" ? <RealtimePanel controller={realtime} /> : null}
           {screen === "chat" ? (
-            <div className={styles.chatToolbar}>
+            <div
+              className={styles.chatToolbar}
+              style={realtime.busy ? { display: "none" } : undefined}
+            >
+              {/* The retained editor below is hidden during a call, so mobile
+                  voice controls can use the remaining viewport without loss. */}
               <label className={styles.modelPicker}>
                 <span>模型</span>
                 <select
@@ -2018,6 +2156,7 @@ export function FamilyApp() {
                     detailLoading ||
                     modelLoading ||
                     voice.busy ||
+                    realtimeBusy.current ||
                     draftAttachments.preparing ||
                     models.length === 0
                   }
@@ -2082,7 +2221,13 @@ export function FamilyApp() {
                 </button>
                 <button
                   className={styles.secondary}
-                  disabled={sending || working || cancelPending || voice.busy}
+                  disabled={
+                    sending ||
+                    working ||
+                    cancelPending ||
+                    voice.busy ||
+                    realtimeBusy.current
+                  }
                   onClick={() =>
                     void run(async () => {
                       await loadChats();
@@ -2364,6 +2509,28 @@ export function FamilyApp() {
                           ? "未报告"
                           : `${account.voiceAudioSeconds.toFixed(1)} 秒`}
                       </dd>
+                      {account.realtimeRequests !== undefined ? (
+                        <>
+                          <dt>实时语音输入 / 输出 token</dt>
+                          <dd>
+                            {account.realtimeInputTokens?.toLocaleString() ??
+                              "未报告"}{" "}
+                            /{" "}
+                            {account.realtimeOutputTokens?.toLocaleString() ??
+                              "未报告"}
+                          </dd>
+                          <dt>实时语音用量未知的请求</dt>
+                          <dd>
+                            {account.realtimeUnknownUsageRequests ?? "未报告"}
+                          </dd>
+                          <dt>已统计的实时录音时长（非计费）</dt>
+                          <dd>
+                            {account.realtimeAudioSeconds === undefined
+                              ? "未报告"
+                              : `${account.realtimeAudioSeconds.toFixed(1)} 秒`}
+                          </dd>
+                        </>
+                      ) : null}
                       <dt>最近访问</dt>
                       <dd>{dateText(account.lastSeenAt)}</dd>
                     </dl>
@@ -2476,6 +2643,7 @@ export function FamilyApp() {
             <>
               <div
                 className={styles.messages}
+                style={realtime.busy ? { display: "none" } : undefined}
                 aria-label="聊天记录"
                 aria-busy={sending}
               >
@@ -2500,10 +2668,11 @@ export function FamilyApp() {
                           attachmentScope={attachmentReadScope(selectedChat)}
                           onAttachmentUnauthorized={() => void checkIdentity()}
                           onSpeak={(reply) => {
-                            if (selectedChat)
+                            if (selectedChat && !realtimeBusy.current)
                               void voice.speak(selectedChat, reply);
                           }}
                           speechDisabled={
+                            realtimeBusy.current ||
                             voice.phase !== "idle" ||
                             sending ||
                             cancelPending ||
@@ -2562,6 +2731,7 @@ export function FamilyApp() {
               </div>
               <form
                 className={styles.composer}
+                style={realtime.busy ? { display: "none" } : undefined}
                 onSubmit={(event) => {
                   event.preventDefault();
                   void generateMessage(
@@ -2683,7 +2853,8 @@ export function FamilyApp() {
                     cancelPending ||
                     working ||
                     detailLoading ||
-                    voice.busy
+                    voice.busy ||
+                    realtimeBusy.current
                   }
                   editing={!!editingMessage}
                   error={attachmentError}
@@ -2701,7 +2872,13 @@ export function FamilyApp() {
                   placeholder={editingMessage ? "修改上一条提问…" : "输入消息…"}
                   rows={2}
                   maxLength={12000}
-                  disabled={sending || working || detailLoading || voice.busy}
+                  disabled={
+                    sending ||
+                    working ||
+                    detailLoading ||
+                    voice.busy ||
+                    realtimeBusy.current
+                  }
                   enterKeyHint="send"
                   onCompositionStart={() => {
                     composing.current = true;
@@ -2748,7 +2925,8 @@ export function FamilyApp() {
                           checking ||
                           detailLoading ||
                           !chosenModel ||
-                          voice.busy))
+                          voice.busy ||
+                          realtimeBusy.current))
                     }
                     onContextMenu={(event) => event.preventDefault()}
                     onPointerDown={(event) => {
@@ -2845,7 +3023,7 @@ export function FamilyApp() {
                   <button
                     type="button"
                     className={styles.textButton}
-                    disabled={voice.busy}
+                    disabled={voice.busy || realtimeBusy.current}
                     onClick={() => setTapRecord((value) => !value)}
                   >
                     {tapRecord ? "切换为按住说话" : "点击录音模式"}
@@ -2904,7 +3082,8 @@ export function FamilyApp() {
                         lastAssistantMessage?.status === "streaming" ||
                         (selectedChat !== null && !activeChat) ||
                         !chosenModel ||
-                        voice.busy
+                        voice.busy ||
+                        realtimeBusy.current
                       }
                     >
                       {editingMessage ? "保存并重新回复" : "发送 ↑"}

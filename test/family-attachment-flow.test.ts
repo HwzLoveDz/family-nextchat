@@ -196,6 +196,7 @@ beforeEach(() => {
           created_at: date,
         },
       ]);
+    if (sql.startsWith("SELECT 1 FROM family_realtime_call")) return result();
     throw new Error("Unexpected offline fixture query: " + sql.slice(0, 60));
   });
 });
