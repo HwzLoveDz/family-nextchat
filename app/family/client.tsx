@@ -1914,7 +1914,7 @@ export function FamilyApp() {
           <h1>{user.role === "admin" ? "更新聊天功能" : "服务正在升级"}</h1>
           <p className={styles.subtitle}>
             {user.role === "admin"
-              ? "更新后即可发送图片和附件。"
+              ? "更新后即可使用实时语音聊天。"
               : "请等待管理员更新聊天功能，稍后再来。"}
           </p>
           {error ? (

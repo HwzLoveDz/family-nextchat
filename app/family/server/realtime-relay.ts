@@ -46,6 +46,60 @@ const MAX_QUEUE_BYTES = PCM_BYTES_PER_SECOND * 30;
 const MAX_BUFFERED_BYTES = 1_048_576;
 const MAX_PROVIDER_FRAME = 1_048_576;
 const PROVIDER_ID = /^[a-zA-Z0-9_-]{1,200}$/;
+const SAFE_ERROR_CODES = new Set([
+  "invalid_value",
+  "invalid_request_error",
+  "invalid_event",
+  "missing_required_parameter",
+  "unsupported_value",
+  "unknown_parameter",
+  "string_above_max_length",
+  "string_too_long",
+  "invalid_api_key",
+  "insufficient_quota",
+  "rate_limit_exceeded",
+  "server_error",
+]);
+const SAFE_ERROR_TYPES = new Set([
+  "invalid_request_error",
+  "server_error",
+  "authentication_error",
+  "rate_limit_error",
+]);
+const SAFE_ERROR_PARAMS = new Set([
+  "item",
+  "item.id",
+  "item.content",
+  "item.content[0]",
+  "item.content[0].type",
+  "session",
+  "session.audio.input",
+  "session.audio.input.turn_detection",
+  "session.audio.output.voice",
+  "response",
+]);
+function logProviderError(
+  error: unknown,
+  phase: "session" | "history" | "active",
+) {
+  const value =
+    error && typeof error === "object"
+      ? (error as Record<string, unknown>)
+      : {};
+  // Never log provider messages, event/item IDs, user content, or unknown values.
+  console.error("[FamilyRealtime] provider rejected event", {
+    phase,
+    ...(typeof value.code === "string" && SAFE_ERROR_CODES.has(value.code)
+      ? { code: value.code }
+      : {}),
+    ...(typeof value.type === "string" && SAFE_ERROR_TYPES.has(value.type)
+      ? { type: value.type }
+      : {}),
+    ...(typeof value.param === "string" && SAFE_ERROR_PARAMS.has(value.param)
+      ? { param: value.param }
+      : {}),
+  });
+}
 type FinalStatus = "completed" | "cancelled" | "failed" | "incomplete";
 type Turn = {
   responseId: string;
@@ -136,6 +190,7 @@ export async function startRealtimeRelay(
   const inputTranscripts = new Map<string, string>();
   const awaitingResponse: string[] = [];
   const discardedResponses = new Set<string>();
+  const pendingHistory = new Set<string>();
   let upstream: WebSocket | undefined;
   let ready = false;
   let configured = false;
@@ -584,30 +639,8 @@ export async function startRealtimeRelay(
         });
         return;
       }
-      if (event.type === "session.updated") {
-        if (!created || configured) throw new Error("INVALID_SESSION_UPDATE");
-        const session = object(event.session);
-        if (
-          session.type !== "realtime" ||
-          !expectedSessionModel(session.model, context.model)
-        )
-          throw new Error("INVALID_SESSION_UPDATE");
-        configured = true;
-        for (const [index, item] of context.history.entries())
-          providerSend({
-            type: "conversation.item.create",
-            item: {
-              id: `history_${context.connectionId.replace(/-/g, "")}_${index}`,
-              type: "message",
-              role: item.role,
-              content: [
-                {
-                  type: item.role === "user" ? "input_text" : "output_text",
-                  text: item.content,
-                },
-              ],
-            },
-          });
+      const announceReady = () => {
+        if (ready || !configured || pendingHistory.size) return;
         ready = true;
         send({
           type: "ready",
@@ -623,6 +656,63 @@ export async function startRealtimeRelay(
           ),
         });
         send({ type: "state", state: "listening" });
+      };
+      if (event.type === "session.updated") {
+        if (!created || configured) throw new Error("INVALID_SESSION_UPDATE");
+        const session = object(event.session);
+        if (
+          session.type !== "realtime" ||
+          !expectedSessionModel(session.model, context.model)
+        )
+          throw new Error("INVALID_SESSION_UPDATE");
+        configured = true;
+        for (const [index, item] of context.history.entries()) {
+          // Item IDs are scoped to this upstream session and must fit its 32-char limit.
+          const historyId = `history_${index}`;
+          pendingHistory.add(historyId);
+          providerSend({
+            type: "conversation.item.create",
+            item: {
+              id: historyId,
+              type: "message",
+              role: item.role,
+              content: [
+                {
+                  type: item.role === "user" ? "input_text" : "output_text",
+                  text: item.content,
+                },
+              ],
+            },
+          });
+        }
+        announceReady();
+        return;
+      }
+      if (event.type === "error") {
+        // A cancellation may race a finished response; all other errors are fatal.
+        if (event.error?.code === "response_cancel_not_active") return;
+        logProviderError(
+          event.error,
+          ready ? "active" : configured ? "history" : "session",
+        );
+        throw providerFailure();
+      }
+      if (
+        configured &&
+        [
+          "conversation.item.created",
+          "conversation.item.done",
+          "conversation.item.added",
+        ].includes(event.type)
+      ) {
+        const item = object(event.item);
+        // Newer added/done variants must confirm a complete item, not an empty shell.
+        if (
+          event.type !== "conversation.item.added" ||
+          item.status === "completed"
+        ) {
+          if (pendingHistory.delete(identifier(item.id))) announceReady();
+        }
         return;
       }
       if (
@@ -878,10 +968,6 @@ export async function startRealtimeRelay(
         });
         checkTurnLimit();
         checkRotation();
-      } else if (event.type === "error") {
-        // Cancel races are harmless, but provider diagnostics never leave the server.
-        const code = event.error?.code;
-        if (code !== "response_cancel_not_active") throw providerFailure();
       }
     } catch {
       if (!stopping)

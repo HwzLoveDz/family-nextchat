@@ -105,7 +105,10 @@ function launch(overrides: Partial<RealtimeContext> = {}) {
   running.push(done);
   return { peer, done };
 }
-async function ready(overrides: Partial<RealtimeContext> = {}) {
+async function ready(
+  overrides: Partial<RealtimeContext> = {},
+  acknowledgeHistory = true,
+) {
   const call = launch(overrides);
   await flush();
   const socket = FixtureSocket.instances.at(-1)!;
@@ -122,8 +125,14 @@ async function ready(overrides: Partial<RealtimeContext> = {}) {
     type: "session.updated",
     session: { type: "realtime", model: REALTIME_MODEL },
   });
+  if (acknowledgeHistory)
+    for (const event of socket.sent.filter(
+      (event) => event.type === "conversation.item.create",
+    ))
+      socket.event({ type: "conversation.item.created", item: event.item });
   await flush();
-  expect(call.peer.sent.some((event) => event.type === "ready")).toBe(true);
+  if (acknowledgeHistory)
+    expect(call.peer.sent.some((event) => event.type === "ready")).toBe(true);
   return { ...call, socket };
 }
 function createTurn(
@@ -193,6 +202,7 @@ beforeEach(() => {
   runtimeDeadline = undefined;
   jest.clearAllMocks();
   assertLease.mockResolvedValue(undefined);
+  jest.spyOn(console, "error").mockImplementation(() => {});
 });
 afterEach(async () => {
   for (const peer of peers)
@@ -251,6 +261,104 @@ test("uses fixed GA PCM/VAD settings, bounded history, and no initial generated 
   );
   expect(JSON.stringify(peer.sent)).not.toContain(rawSecret);
 });
+
+test("history IDs fit the provider limit and ready waits for every complete acknowledgement", async () => {
+  const { peer, socket } = await ready(
+    {
+      history: [
+        { role: "user", content: "合成历史问题" },
+        { role: "assistant", content: "合成历史回答" },
+      ],
+    },
+    false,
+  );
+  const items = socket.sent
+    .filter((event) => event.type === "conversation.item.create")
+    .map((event) => event.item);
+  expect(items).toHaveLength(2);
+  for (const item of items) expect(item.id).toMatch(/^[a-zA-Z0-9_-]{1,32}$/);
+  expect(new Set(items.map((item) => item.id)).size).toBe(2);
+  expect(peer.sent.some((event) => event.type === "ready")).toBe(false);
+  expect(
+    socket.sent.some((event) => event.type === "input_audio_buffer.append"),
+  ).toBe(false);
+  socket.event({
+    type: "conversation.item.created",
+    item: { id: "unrelated" },
+  });
+  socket.event({ type: "conversation.item.created", item: items[0] });
+  socket.event({ type: "conversation.item.created", item: items[0] });
+  socket.event({
+    type: "conversation.item.added",
+    item: { ...items[1], status: "in_progress" },
+  });
+  expect(peer.sent.some((event) => event.type === "ready")).toBe(false);
+  socket.event({
+    type: "conversation.item.done",
+    item: { ...items[1], status: "completed" },
+  });
+  socket.event({ type: "conversation.item.created", item: items[1] });
+  expect(peer.sent.filter((event) => event.type === "ready")).toHaveLength(1);
+  peer.audio(Buffer.alloc(4800));
+  expect(socket.sent.at(-1)?.type).toBe("input_audio_buffer.append");
+});
+
+test("missing history acknowledgements remain within the startup timeout", async () => {
+  const { peer, done } = await ready(
+    { history: [{ role: "user", content: "合成历史" }] },
+    false,
+  );
+  await jest.advanceTimersByTimeAsync(15_000);
+  await done;
+  expect(peer.sent.some((event) => event.type === "ready")).toBe(false);
+  expect(peer.sent).toContainEqual(
+    expect.objectContaining({
+      type: "error",
+      fatal: true,
+      code: "REALTIME_CONNECT_TIMEOUT",
+    }),
+  );
+});
+
+test.each([true, false])(
+  "history rejection logs only explicitly allowlisted diagnostics (%s)",
+  async (known) => {
+    const { peer, socket, done } = await ready(
+      { history: [{ role: "user", content: "合成历史" }] },
+      false,
+    );
+    socket.event({
+      type: "error",
+      event_id: rawSecret,
+      error: {
+        code: known ? "invalid_value" : rawSecret,
+        type: known ? "invalid_request_error" : rawSecret,
+        param: known ? "item.id" : rawSecret,
+        message: rawSecret,
+        id: rawSecret,
+        content: rawSecret,
+      },
+    });
+    await done;
+    expect(peer.sent.some((event) => event.type === "ready")).toBe(false);
+    expect(console.error).toHaveBeenCalledWith(
+      "[FamilyRealtime] provider rejected event",
+      known
+        ? {
+            phase: "history",
+            code: "invalid_value",
+            type: "invalid_request_error",
+            param: "item.id",
+          }
+        : { phase: "history" },
+    );
+    expect(JSON.stringify(jest.mocked(console.error).mock.calls)).not.toContain(
+      rawSecret,
+    );
+    expect(JSON.stringify(peer.sent)).not.toContain(rawSecret);
+    expect(FixtureSocket.instances).toHaveLength(1);
+  },
+);
 
 test("fast mode uses server VAD and forwards only even bounded input PCM", async () => {
   const { peer, socket } = await ready({ vad: "fast" });
