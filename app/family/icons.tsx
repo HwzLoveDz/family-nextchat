@@ -12,6 +12,7 @@ const paths = {
   pin: "m9 3 6 0-1 5 4 4v2H6v-2l4-4-1-5Zm3 11v7",
   dots: "M5 12h.01M12 12h.01M19 12h.01",
   file: "M14 3H5v18h14V8l-5-5Zm0 0v5h5M8 12h8M8 16h6",
+  chart: "M4 3v18h17M8 17v-4m5 4V8m5 9V4",
   mic: "M9 5a3 3 0 0 1 6 0v7a3 3 0 0 1-6 0V5Zm-3 6v1a6 6 0 0 0 12 0v-1m-6 7v4m-4 0h8",
   voice: "M4 10v4m4-7v10m4-14v18m4-14v10m4-7v4",
   arrowUp: "M12 20V4m-7 7 7-7 7 7",

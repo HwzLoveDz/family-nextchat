@@ -203,3 +203,67 @@ test("message JSON accepts bounded attachments but rejects >3MB stream before ge
   expect((await call("a".repeat(3_000_001))).status).toBe(413);
   expect(generate).not.toHaveBeenCalled();
 });
+
+const generatedRow = () => ({
+  id: attachmentId,
+  owner_id: ownerId,
+  user_id: ownerId,
+  chat_id: "chat",
+  name: "AI图片-fixture.jpg",
+  media_type: "image/jpeg",
+  byte_size: 4,
+  width: 1024,
+  height: 1024,
+  model: "gpt-image-2.5-flare",
+  data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+  created_at: new Date("2026-11-03T00:00:00Z"),
+});
+test("generated image owner read is scoped, private and preserves rolling login", async () => {
+  query.mockResolvedValueOnce({ rows: [generatedRow()], rowCount: 1 });
+  const response = await get(["generated-images", attachmentId]);
+  expect(response.status).toBe(200);
+  expect(Buffer.from(await response.arrayBuffer())).toEqual(
+    generatedRow().data,
+  );
+  expect(query.mock.calls[0][1]).toEqual([attachmentId, ownerId]);
+  expect(query.mock.calls[0][0]).toContain("c.deleted_at IS NULL");
+  expect(query.mock.calls[0][0]).toContain("g.superseded_at IS NULL");
+  expect(response.headers.get("content-type")).toBe("image/jpeg");
+  expect(response.headers.get("cache-control")).toContain("private, no-store");
+  expect(response.headers.get("content-disposition")).toContain(
+    'inline; filename="generated-image.jpg"',
+  );
+  expect(response.headers.get("set-cookie")).toContain("fixture-session=");
+});
+test("generated image anonymous and member admin-route reads are denied before bytes", async () => {
+  auth.mockRejectedValueOnce(new FamilyApiError(401, "请登录。"));
+  expect((await get(["generated-images", attachmentId])).status).toBe(401);
+  expect((await get(["admin", "generated-images", attachmentId])).status).toBe(
+    403,
+  );
+  expect(query).not.toHaveBeenCalled();
+});
+test("generated image admin archive access requires a successful content audit", async () => {
+  role = "admin";
+  query.mockResolvedValue({ rows: [generatedRow()], rowCount: 1 });
+  const response = await get(["admin", "generated-images", attachmentId]);
+  expect(response.status).toBe(200);
+  expect(query.mock.calls[0][1]).toEqual([attachmentId]);
+  expect(audit).toHaveBeenCalledWith(
+    ownerId,
+    "generated-image.content.read",
+    ownerId,
+    "chat",
+  );
+  audit.mockRejectedValueOnce(new FamilyApiError(503, "审计暂不可用。"));
+  const denied = await get(["admin", "generated-images", attachmentId]);
+  expect(denied.status).toBe(503);
+  expect(await denied.text()).not.toContain("AI图片-fixture");
+});
+test("missing or superseded generated image reads never return a redirect or remote URL", async () => {
+  query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+  const response = await get(["generated-images", attachmentId]);
+  expect(response.status).toBe(404);
+  expect(response.headers.get("location")).toBeNull();
+  expect(await response.text()).not.toContain("data:image");
+});

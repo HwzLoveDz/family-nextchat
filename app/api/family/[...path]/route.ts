@@ -23,6 +23,7 @@ import {
   validId,
 } from "@/app/family/server/chats";
 import { listWorkspaceFiles } from "@/app/family/server/workspace-files";
+import { readGeneratedImage } from "@/app/family/server/generated-images";
 import { modelCatalog } from "@/app/family/server/models";
 import { getProviderPolicyState } from "@/app/family/server/provider-policy";
 import {
@@ -45,7 +46,7 @@ import type { NextRequest } from "next/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 async function handle(
   request: NextRequest,
@@ -102,14 +103,48 @@ async function handle(
     if (
       path[0] === "chats" ||
       path[0] === "attachments" ||
+      path[0] === "generated-images" ||
       path[0] === "files" ||
       joined === "models" ||
       (path[0] === "admin" &&
-        (path.includes("chats") || path.includes("attachments")))
+        (path.includes("chats") ||
+          path.includes("attachments") ||
+          path.includes("generated-images")))
     )
       await requireFamilyApplicationUpgrade();
     if (method === "GET" && joined === "models")
       return finish(json(modelCatalog()));
+    if (
+      method === "GET" &&
+      ((path[0] === "generated-images" && path.length === 2) ||
+        (path[0] === "admin" &&
+          path[1] === "generated-images" &&
+          path.length === 3))
+    ) {
+      const admin = path[0] === "admin";
+      const saved = await readGeneratedImage(
+        validId(path[admin ? 2 : 1]),
+        admin ? undefined : userId,
+      );
+      if (admin)
+        await audit(
+          userId,
+          "generated-image.content.read",
+          saved.ownerId,
+          saved.chatId,
+        );
+      return finish(
+        new Response(new Uint8Array(saved.bytes), {
+          headers: {
+            "Content-Type": "image/jpeg",
+            "Content-Length": String(saved.bytes.length),
+            "Content-Disposition": `inline; filename="generated-image.jpg"; filename*=UTF-8''${encodeURIComponent(
+              saved.meta.name,
+            )}`,
+          },
+        }),
+      );
+    }
     if (
       method === "GET" &&
       ((path[0] === "attachments" && path.length === 2) ||

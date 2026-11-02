@@ -11,8 +11,11 @@ import {
 import { FamilyMarkdown } from "./message-markdown";
 import { FamilySettings } from "./family-settings";
 import { FamilyIcon } from "./icons";
+import { modelDescription } from "./model-descriptions";
 import { ProviderAdminPanel } from "./provider-admin-panel";
 import type { ProviderAdminSnapshot } from "./provider-admin-types";
+import { UsageDashboard } from "./usage-dashboard";
+import type { UsageDashboardData } from "./usage-dashboard-types";
 import { useWorkspacePreferences } from "./use-workspace-preferences";
 import type {
   FamilyFilePage,
@@ -46,6 +49,13 @@ import { RealtimePanel } from "./realtime-panel";
 import { useFamilyViewport } from "./use-family-viewport";
 import { useFamilyTheme } from "./use-family-theme";
 import { ThemeSettings } from "./theme-settings";
+import { ImageGenerationControls } from "./image-controls";
+import {
+  DEFAULT_IMAGE_OPTIONS,
+  FAMILY_IMAGE_QUALITIES,
+  FAMILY_IMAGE_SIZES,
+  type FamilyImageOptions,
+} from "./image-types";
 import {
   AttachmentComposer,
   MessageAttachments,
@@ -118,6 +128,19 @@ function modelText(message: FamilyMessage) {
     ? `请求模型 ${message.requestedModel}（未报告实际模型）`
     : "";
 }
+function imageOptionsFromMessages(
+  messages: FamilyMessage[],
+): FamilyImageOptions {
+  const options = [...messages]
+    .reverse()
+    .find((message) => !message.superseded && message.imageOptions)
+    ?.imageOptions;
+  return options &&
+    FAMILY_IMAGE_SIZES.includes(options.size) &&
+    FAMILY_IMAGE_QUALITIES.includes(options.quality)
+    ? { ...options }
+    : { ...DEFAULT_IMAGE_OPTIONS };
+}
 function markdownExport(detail: FamilyChatDetail) {
   return [
     `# ${detail.chat.title || "新聊天"}`,
@@ -139,6 +162,28 @@ function markdownExport(detail: FamilyChatDetail) {
                   .replace(/[\\`*_\[\]{}()#+!|>-]/g, "\\$&")} · ${
                   attachment.mediaType
                 } · ${attachmentSize(attachment.byteSize)}`,
+            ),
+            "",
+          ]
+        : []),
+      ...(message.imageOptions
+        ? [
+            `图片生成设置：${message.imageOptions.size} / ${message.imageOptions.quality}`,
+            "",
+          ]
+        : []),
+      ...(message.generatedImages?.length
+        ? [
+            "生成的图片（文件内容未打包）：",
+            ...message.generatedImages.map(
+              (image) =>
+                `- ${image.name
+                  .replace(/[\r\n]/g, " ")
+                  .replace(/[\\`*_\[\]{}()#+!|>-]/g, "\\$&")} · ${
+                  image.width
+                } × ${image.height} · ${image.mediaType} · ${attachmentSize(
+                  image.byteSize,
+                )}`,
             ),
             "",
           ]
@@ -185,7 +230,9 @@ const MessageBody = memo(function MessageBody({
         ) : null}
         <span>
           {message.status === "streaming"
-            ? "正在回复…"
+            ? message.requestedModel?.startsWith("gpt-image-")
+              ? "正在生成图片…"
+              : "正在回复…"
             : dateText(message.createdAt)}
         </span>
       </div>
@@ -201,6 +248,11 @@ const MessageBody = memo(function MessageBody({
           <span className={styles.muted}>
             {message.role === "user" && message.attachments?.length
               ? "已发送附件"
+              : message.generatedImages?.length
+              ? "图片已生成"
+              : message.requestedModel?.startsWith("gpt-image-") &&
+                message.status === "streaming"
+              ? "正在生成图片…"
               : "等待回复…"}
           </span>
         )}
@@ -208,6 +260,18 @@ const MessageBody = memo(function MessageBody({
       {attachmentScope ? (
         <MessageAttachments
           attachments={message.attachments}
+          scope={attachmentScope}
+          admin={attachmentAdmin}
+          onUnauthorized={onAttachmentUnauthorized}
+        />
+      ) : null}
+      {attachmentScope && message.generatedImages?.length ? (
+        <MessageAttachments
+          attachments={message.generatedImages.map((image) => ({
+            ...image,
+            kind: "image" as const,
+          }))}
+          source="generated"
           scope={attachmentScope}
           admin={attachmentAdmin}
           onUnauthorized={onAttachmentUnauthorized}
@@ -299,7 +363,9 @@ export function FamilyApp() {
   const { preferences, setPreferences } = useWorkspacePreferences();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [workspaceMode, setWorkspaceMode] = useState<"chat" | "files">("chat");
+  const [workspaceMode, setWorkspaceMode] = useState<
+    "chat" | "files" | "usage"
+  >("chat");
   const [archivedView, setArchivedView] = useState(false);
   const [nextChatCursor, setNextChatCursor] = useState<string | null>(null);
   const [listLoading, setListLoading] = useState(false);
@@ -336,6 +402,9 @@ export function FamilyApp() {
   const [activeChat, setActiveChat] = useState<FamilyChat | null>(null);
   const [models, setModels] = useState<FamilyModel[]>([]);
   const [selectedModel, setSelectedModel] = useState("");
+  const [imageOptions, setImageOptions] = useState<FamilyImageOptions>(() => ({
+    ...DEFAULT_IMAGE_OPTIONS,
+  }));
   const [modelLoading, setModelLoading] = useState(false);
   const [modelError, setModelError] = useState("");
   const [search, setSearch] = useState("");
@@ -441,7 +510,9 @@ export function FamilyApp() {
         !realtimeBusy.current &&
         !detailLoading &&
         status?.schemaReady !== false &&
-        models.some((model) => model.id === selectedModel),
+        models.some(
+          (model) => model.id === selectedModel && model.kind !== "image",
+        ),
     }),
     onTranscript: (text, scope) => voiceSubmit.current(text, scope),
     onError: (message) => setError(message),
@@ -456,6 +527,9 @@ export function FamilyApp() {
       verified: identityVerified.current,
       canStart:
         screen === "chat" &&
+        !models.some(
+          (model) => model.id === selectedModel && model.kind === "image",
+        ) &&
         !voice.busy &&
         !sending &&
         !working &&
@@ -580,6 +654,7 @@ export function FamilyApp() {
     setActiveChat(null);
     setModels([]);
     setSelectedModel("");
+    setImageOptions({ ...DEFAULT_IMAGE_OPTIONS });
     setModelLoading(false);
     setModelError("");
     setSearch("");
@@ -1097,6 +1172,7 @@ export function FamilyApp() {
         setOlderCursor(data.nextBeforeMessageId ?? null);
         setActiveChat(data.chat);
         setSelectedModel(data.chat.model || defaultModel.current);
+        setImageOptions(imageOptionsFromMessages(data.messages));
       }
     } finally {
       if (generation === epoch.current && version === listVersion.current)
@@ -1226,16 +1302,16 @@ export function FamilyApp() {
       (selectedChat !== null && !activeChat)
     )
       return;
-    if (!models.some((model) => model.id === selectedModel)) {
+    const generationModel = models.find((model) => model.id === selectedModel);
+    if (!generationModel) {
       setError("请先选择一个可用模型。");
       return;
     }
     const capabilityError =
       mode === "send"
-        ? attachmentModelError(
-            draftAttachments.items,
-            models.find((model) => model.id === selectedModel),
-          )
+        ? generationModel.kind === "image" && hasDraftFiles
+          ? "图片生成暂不支持附件，请先移除附件。"
+          : attachmentModelError(draftAttachments.items, generationModel)
         : "";
     if (capabilityError) {
       setError(capabilityError);
@@ -1301,6 +1377,8 @@ export function FamilyApp() {
             content: "",
             status: "streaming",
             createdAt,
+            requestedModel: selectedModel,
+            ...(generationModel.kind === "image" ? { imageOptions } : {}),
           },
         ]);
       if (mode === "send" || mode === "edit") setDraft("");
@@ -1326,6 +1404,8 @@ export function FamilyApp() {
               mode,
               sourceMessageId: sourceMessageId!,
             };
+      if (generationModel.kind === "image")
+        payload.imageOptions = { ...imageOptions };
       const serialized = JSON.stringify(payload);
       if (new Blob([serialized]).size >= ATTACHMENT_LIMITS.wireBytes)
         throw new Error("消息与附件合计过大，请移除部分附件后重试。");
@@ -1479,6 +1559,7 @@ export function FamilyApp() {
             setOlderCursor(detail.nextBeforeMessageId ?? null);
             acceptChat(detail.chat);
             setSelectedModel(detail.chat.model || defaultModel.current);
+            setImageOptions(imageOptionsFromMessages(detail.messages));
           }
         } catch (failure) {
           if (
@@ -1516,6 +1597,9 @@ export function FamilyApp() {
       scope.userId !== currentUser.current?.id ||
       scope.chatId !== selectedChatRef.current ||
       scope.model !== selectedModel ||
+      models.some(
+        (model) => model.id === selectedModel && model.kind === "image",
+      ) ||
       !identityVerified.current ||
       draft.trim() ||
       draftAttachments.hasAny()
@@ -1686,6 +1770,7 @@ export function FamilyApp() {
           setHasOlderMessages(detail.hasMoreMessages ?? false);
           setOlderCursor(detail.nextBeforeMessageId ?? null);
           setSelectedModel(detail.chat.model || defaultModel.current);
+          setImageOptions(imageOptionsFromMessages(detail.messages));
         })
         .catch((failure) => {
           if (
@@ -1767,6 +1852,7 @@ export function FamilyApp() {
     attachmentReset.current();
     setActiveChat(null);
     setSelectedModel(defaultModel.current);
+    setImageOptions({ ...DEFAULT_IMAGE_OPTIONS });
     setRenameTitle(null);
     setEditingMessage(null);
     setDraftBeforeEdit("");
@@ -1926,10 +2012,11 @@ export function FamilyApp() {
     (a, b) => Number(!!b.pinnedAt) - Number(!!a.pinnedAt),
   );
   const chosenModel = models.find((model) => model.id === selectedModel);
-  const attachmentError = attachmentModelError(
-    draftAttachments.items,
-    chosenModel,
-  );
+  const imageMode = chosenModel?.kind === "image";
+  const attachmentError =
+    imageMode && draftAttachments.hasAny()
+      ? "图片生成暂不支持附件，请先移除附件。"
+      : attachmentModelError(draftAttachments.items, chosenModel);
   const attachmentReadScope = (
     chatId: string | null,
     admin = false,
@@ -2329,6 +2416,23 @@ export function FamilyApp() {
               <FamilyIcon name="file" />
               <span className={styles.navLabel}>我的文件</span>
             </button>
+            <button
+              className={`${styles.navButton} ${
+                workspaceMode === "usage" ? styles.activeChat : ""
+              }`}
+              disabled={
+                voice.busy || realtimeBusy.current || sending || working
+              }
+              onClick={() => {
+                setWorkspaceMode("usage");
+                setScreen("chat");
+                setSidebarOpen(false);
+              }}
+              title="我的用量"
+            >
+              <FamilyIcon name="chart" />
+              <span className={styles.navLabel}>我的用量</span>
+            </button>
           </div>
           <label className={styles.searchField}>
             <span className={styles.srOnly}>搜索聊天</span>
@@ -2516,105 +2620,14 @@ export function FamilyApp() {
                   ? "账户与用量管理"
                   : workspaceMode === "files"
                   ? "我的文件"
+                  : workspaceMode === "usage"
+                  ? "我的用量"
                   : activeChat?.title ||
                     chats.find((chat) => chat.id === selectedChat)?.title ||
                     "新聊天"}
               </h1>
             </div>
-            <button
-              className={styles.iconButton}
-              aria-label="设置"
-              title="设置"
-              onClick={() => setSettingsOpen(true)}
-            >
-              <FamilyIcon name="settings" />
-            </button>
-            {user.role === "admin" && screen !== "admin" ? (
-              <button
-                disabled={
-                  sending || working || voice.busy || realtimeBusy.current
-                }
-                onClick={() => void run(openAdmin)}
-              >
-                邀请家人
-              </button>
-            ) : null}
-            {screen === "admin" ? (
-              <button
-                className={styles.secondary}
-                onClick={() => {
-                  setScreen("chat");
-                  setAdminDetail(null);
-                  setNewInvite(null);
-                }}
-              >
-                返回聊天
-              </button>
-            ) : null}
-          </header>
-          {screen === "chat" ? (
-            <RealtimePanel controller={realtime} embedded />
-          ) : null}
-          {screen === "chat" ? (
-            <div
-              className={styles.chatToolbar}
-              style={
-                realtime.busy || workspaceMode === "files"
-                  ? { display: "none" }
-                  : undefined
-              }
-            >
-              {/* The retained editor below is hidden during a call, so mobile
-                  voice controls can use the remaining viewport without loss. */}
-              <label className={styles.modelPicker}>
-                <span>模型</span>
-                <select
-                  aria-label="选择模型"
-                  value={selectedModel}
-                  disabled={
-                    sending ||
-                    working ||
-                    detailLoading ||
-                    modelLoading ||
-                    voice.busy ||
-                    realtimeBusy.current ||
-                    draftAttachments.preparing ||
-                    models.length === 0
-                  }
-                  onChange={(event) =>
-                    void run(() => changeModel(event.target.value))
-                  }
-                >
-                  {!chosenModel ? (
-                    <option value={selectedModel}>
-                      {modelLoading
-                        ? "正在加载模型…"
-                        : selectedModel
-                        ? `${selectedModel}（不可用，请更换）`
-                        : "请选择模型"}
-                    </option>
-                  ) : null}
-                  {models.map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.name}
-                      {model.reasoning ? " · 推理" : ""}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              {modelError ? (
-                <div className={styles.modelError} role="alert">
-                  {modelError}
-                  <button
-                    className={styles.textButton}
-                    disabled={modelLoading}
-                    onClick={() => void loadModels()}
-                  >
-                    重新加载模型
-                  </button>
-                </div>
-              ) : null}
+            {screen === "chat" && workspaceMode === "chat" && !realtime.busy ? (
               <details className={styles.conversationMenu}>
                 <summary aria-label="对话操作" title="对话操作">
                   <FamilyIcon name="dots" />
@@ -2688,6 +2701,9 @@ export function FamilyApp() {
                           setSelectedModel(
                             detail.chat.model || defaultModel.current,
                           );
+                          setImageOptions(
+                            imageOptionsFromMessages(detail.messages),
+                          );
                         }
                       })
                     }
@@ -2703,7 +2719,40 @@ export function FamilyApp() {
                   </button>
                 </div>
               </details>
-            </div>
+            ) : null}
+            <button
+              className={styles.iconButton}
+              aria-label="设置"
+              title="设置"
+              onClick={() => setSettingsOpen(true)}
+            >
+              <FamilyIcon name="settings" />
+            </button>
+            {user.role === "admin" && screen !== "admin" ? (
+              <button
+                disabled={
+                  sending || working || voice.busy || realtimeBusy.current
+                }
+                onClick={() => void run(openAdmin)}
+              >
+                邀请家人
+              </button>
+            ) : null}
+            {screen === "admin" ? (
+              <button
+                className={styles.secondary}
+                onClick={() => {
+                  setScreen("chat");
+                  setAdminDetail(null);
+                  setNewInvite(null);
+                }}
+              >
+                返回聊天
+              </button>
+            ) : null}
+          </header>
+          {screen === "chat" ? (
+            <RealtimePanel controller={realtime} embedded />
           ) : null}
           <FamilySettings
             open={settingsOpen}
@@ -2769,6 +2818,23 @@ export function FamilyApp() {
             }}
             onLogout={() => void logout()}
           />
+          {screen === "chat" && workspaceMode === "usage" ? (
+            <UsageDashboard
+              admin={false}
+              locked={checking || working || !identityVerified.current}
+              scopeKey={`${attachmentEpoch}:${attachmentOwner}:self-usage`}
+              isCurrent={() =>
+                attachmentEpoch === epoch.current &&
+                attachmentOwner === currentUser.current?.id &&
+                identityVerified.current
+              }
+              onLoad={(days) =>
+                workspaceRequest<UsageDashboardData>(
+                  `/api/family/usage?days=${encodeURIComponent(String(days))}`,
+                )
+              }
+            />
+          ) : null}
           {screen === "chat" && workspaceMode === "files" ? (
             <section className={styles.filePanel} aria-label="我的文件库">
               <h2>我的文件</h2>
@@ -2973,6 +3039,26 @@ export function FamilyApp() {
           ) : null}
           {screen === "admin" ? (
             <div className={styles.adminContent}>
+              {user.role === "admin" ? (
+                <UsageDashboard
+                  admin
+                  locked={checking || working || !identityVerified.current}
+                  scopeKey={`${attachmentEpoch}:${attachmentOwner}:admin-usage`}
+                  isCurrent={() =>
+                    attachmentEpoch === epoch.current &&
+                    attachmentOwner === currentUser.current?.id &&
+                    currentUser.current?.role === "admin" &&
+                    identityVerified.current
+                  }
+                  onLoad={(days, userId) => {
+                    const params = new URLSearchParams({ days: String(days) });
+                    if (userId) params.set("userId", userId);
+                    return workspaceRequest<UsageDashboardData>(
+                      `/api/family/admin/usage?${params}`,
+                    );
+                  }}
+                />
+              ) : null}
               {user.role === "admin" ? (
                 <ProviderAdminPanel
                   scopeKey={`${attachmentEpoch}:${attachmentOwner}:admin`}
@@ -3307,7 +3393,7 @@ export function FamilyApp() {
                   setFollowLatest(follow);
                 }}
                 style={
-                  realtime.busy || workspaceMode === "files"
+                  realtime.busy || workspaceMode !== "chat"
                     ? { display: "none" }
                     : undefined
                 }
@@ -3366,6 +3452,10 @@ export function FamilyApp() {
                                 setDraftBeforeEdit(draft);
                                 setDraft(message.content);
                                 setEditingMessage(message.id);
+                                if (message.imageOptions)
+                                  setImageOptions(
+                                    imageOptionsFromMessages([message]),
+                                  );
                               }}
                             >
                               编辑上一条提问
@@ -3450,7 +3540,7 @@ export function FamilyApp() {
               <form
                 className={styles.composer}
                 style={
-                  realtime.busy || workspaceMode === "files"
+                  realtime.busy || workspaceMode !== "chat"
                     ? { display: "none" }
                     : undefined
                 }
@@ -3568,21 +3658,28 @@ export function FamilyApp() {
                     </button>
                   </div>
                 ) : null}
-                <AttachmentComposer
-                  items={draftAttachments.items}
-                  disabled={
-                    sending ||
-                    cancelPending ||
-                    working ||
-                    detailLoading ||
-                    voice.busy ||
-                    realtimeBusy.current
-                  }
-                  editing={!!editingMessage}
-                  error={attachmentError}
-                  onFiles={(files) => void draftAttachments.addFiles(files)}
-                  onRemove={draftAttachments.remove}
-                />
+                {modelError ? (
+                  <div className={styles.composerModelError} role="alert">
+                    {modelError}
+                    <button
+                      className={styles.textButton}
+                      disabled={modelLoading}
+                      onClick={() => void loadModels()}
+                    >
+                      重新加载模型
+                    </button>
+                  </div>
+                ) : null}
+                {imageMode ? (
+                  <ImageGenerationControls
+                    options={imageOptions}
+                    onChange={setImageOptions}
+                    disabled={
+                      turnLocked || checking || !identityVerified.current
+                    }
+                  />
+                ) : null}
+
                 <label className={styles.srOnly} htmlFor="family-message">
                   发送消息
                 </label>
@@ -3591,7 +3688,13 @@ export function FamilyApp() {
                   ref={composerInput}
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
-                  placeholder={editingMessage ? "修改上一条提问…" : "输入消息…"}
+                  placeholder={
+                    imageMode
+                      ? "描述想生成的画面…"
+                      : editingMessage
+                      ? "修改上一条提问…"
+                      : "输入消息…"
+                  }
                   rows={2}
                   maxLength={12000}
                   disabled={
@@ -3624,161 +3727,7 @@ export function FamilyApp() {
                     }
                   }}
                 />
-                <div className={styles.voiceTools}>
-                  <button
-                    type="button"
-                    className={`${styles.voiceButton} ${
-                      voice.phase === "recording" ? styles.voiceRecording : ""
-                    }`}
-                    aria-label={
-                      tapRecord
-                        ? "点击录音，再次点击发送"
-                        : "按住说话，松开发送，移出取消"
-                    }
-                    aria-pressed={voice.phase === "recording"}
-                    aria-describedby="family-voice-help"
-                    disabled={
-                      ["processing", "transcribing"].includes(voice.phase) ||
-                      (voice.phase === "idle" &&
-                        (!voice.supported ||
-                          !!draft.trim() ||
-                          draftAttachments.hasAny() ||
-                          !!editingMessage ||
-                          sending ||
-                          cancelPending ||
-                          working ||
-                          checking ||
-                          detailLoading ||
-                          !chosenModel ||
-                          voice.busy ||
-                          realtimeBusy.current))
-                    }
-                    onContextMenu={(event) => event.preventDefault()}
-                    onPointerDown={(event) => {
-                      if (
-                        tapRecord ||
-                        (event.pointerType === "mouse" && event.button !== 0)
-                      )
-                        return;
-                      event.preventDefault();
-                      setVoiceOutside(false);
-                      try {
-                        event.currentTarget.setPointerCapture(event.pointerId);
-                      } catch {
-                        /* leaving the button cancels without capture */
-                      }
-                      voice.startRecording();
-                    }}
-                    onPointerMove={(event) => {
-                      if (
-                        !tapRecord &&
-                        ["recording", "permission"].includes(voice.phase) &&
-                        !withinVoiceButton(event)
-                      ) {
-                        setVoiceOutside(true);
-                        voice.cancelRecording();
-                        setNotice("已移出按钮，取消语音输入。");
-                      }
-                    }}
-                    onPointerUp={(event) => {
-                      if (tapRecord) return;
-                      event.preventDefault();
-                      if (withinVoiceButton(event)) voice.releaseRecording();
-                      else {
-                        voice.cancelRecording();
-                        setNotice("已取消语音输入。");
-                      }
-                      try {
-                        event.currentTarget.releasePointerCapture(
-                          event.pointerId,
-                        );
-                      } catch {
-                        /* already released */
-                      }
-                    }}
-                    onPointerCancel={() => voice.cancelRecording()}
-                    onLostPointerCapture={voice.cancelGesture}
-                    onPointerLeave={(event) => {
-                      if (
-                        !tapRecord &&
-                        ["recording", "permission"].includes(voice.phase)
-                      ) {
-                        setVoiceOutside(true);
-                        voice.cancelRecording();
-                        setNotice("已移出按钮，取消语音输入。");
-                      }
-                    }}
-                    onKeyDown={(event) => {
-                      if (tapRecord || ![" ", "Enter"].includes(event.key))
-                        return;
-                      event.preventDefault();
-                      if (!event.repeat) {
-                        setVoiceOutside(false);
-                        voice.startRecording();
-                      }
-                    }}
-                    onKeyUp={(event) => {
-                      if (tapRecord || ![" ", "Enter"].includes(event.key))
-                        return;
-                      event.preventDefault();
-                      voice.releaseRecording();
-                    }}
-                    onBlur={voice.cancelGesture}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      if (!tapRecord) return;
-                      if (voice.phase === "recording") voice.releaseRecording();
-                      else if (voice.phase === "permission")
-                        voice.cancelRecording();
-                      else voice.startRecording();
-                    }}
-                  >
-                    {voice.phase === "recording"
-                      ? tapRecord
-                        ? "结束并发送"
-                        : voiceOutside
-                        ? "松手取消"
-                        : "松开发送"
-                      : voice.phase === "permission"
-                      ? "等待麦克风…"
-                      : tapRecord
-                      ? "点击开始录音"
-                      : "按住说话"}
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.secondary}
-                    aria-label="开始连续语音"
-                    title={
-                      realtime.supported
-                        ? "实时语音对话"
-                        : "此浏览器暂不支持连续语音"
-                    }
-                    disabled={
-                      !realtime.supported ||
-                      voice.busy ||
-                      sending ||
-                      working ||
-                      checking ||
-                      detailLoading ||
-                      !!editingMessage ||
-                      draftAttachments.preparing ||
-                      cancelPending ||
-                      !identityVerified.current
-                    }
-                    onClick={() => void realtime.start()}
-                  >
-                    <FamilyIcon name="voice" /> 连续语音
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.iconButton}
-                    aria-label="语音设置"
-                    onClick={() => setSettingsOpen(true)}
-                  >
-                    <FamilyIcon name="settings" size={16} />
-                  </button>
-                </div>
+
                 <p id="family-voice-help" className={styles.srOnly}>
                   {draft.trim() || draftAttachments.hasAny()
                     ? "有未发送的文字或附件，请先发送或清空后再录音。"
@@ -3787,52 +3736,302 @@ export function FamilyApp() {
                     : "松开发送，移出取消。最长 45 秒自动结束，仅发送前 45 秒；首次允许麦克风后请重新录音。"}
                 </p>
                 <div className={styles.composerActions}>
-                  <small>
-                    {preferences.sendKey === "enter"
-                      ? "Enter 发送 · Shift+Enter 换行"
-                      : "Ctrl/⌘ Enter 发送 · Enter 换行"}{" "}
-                    · AI 回答可能有误
-                  </small>
-                  {sending || cancelPending ? (
-                    <button
-                      type="button"
-                      className={styles.secondary}
-                      disabled={cancelPending || !activeGeneration.current}
-                      onClick={() => void stopGeneration()}
-                    >
-                      {cancelPending
-                        ? "正在停止…"
-                        : activeGeneration.current
-                        ? "停止回复"
-                        : "正在连接…"}
-                    </button>
-                  ) : (
-                    <button
-                      type="submit"
-                      className={styles.sendButton}
-                      aria-label={editingMessage ? "保存并重新回复" : "发送 ↑"}
-                      title={editingMessage ? "保存并重新回复" : "发送消息"}
+                  <AttachmentComposer
+                    compact
+                    items={draftAttachments.items}
+                    disabled={
+                      sending ||
+                      cancelPending ||
+                      working ||
+                      detailLoading ||
+                      voice.busy ||
+                      realtimeBusy.current
+                    }
+                    editing={!!editingMessage}
+                    error={attachmentError}
+                    onFiles={(files) => void draftAttachments.addFiles(files)}
+                    onRemove={draftAttachments.remove}
+                  />
+                  <label className={styles.modelPicker}>
+                    <span>模型</span>
+                    <select
+                      aria-label="选择模型"
+                      title={modelDescription(selectedModel) || "选择模型"}
+                      value={selectedModel}
                       disabled={
-                        (!draft.trim() &&
-                          (!!editingMessage || !draftAttachments.hasAny())) ||
-                        draftAttachments.preparing ||
-                        (!editingMessage &&
-                          (draftAttachments.hasErrors || !!attachmentError)) ||
-                        checking ||
-                        !identityVerified.current ||
+                        sending ||
                         working ||
                         detailLoading ||
-                        cancelPending ||
-                        lastAssistantMessage?.status === "streaming" ||
-                        (selectedChat !== null && !activeChat) ||
-                        !chosenModel ||
+                        modelLoading ||
                         voice.busy ||
-                        realtimeBusy.current
+                        realtimeBusy.current ||
+                        draftAttachments.preparing ||
+                        models.length === 0
+                      }
+                      onChange={(event) =>
+                        void run(() => changeModel(event.target.value))
                       }
                     >
-                      <FamilyIcon name="arrowUp" size={20} />
+                      {!chosenModel ? (
+                        <option value={selectedModel}>
+                          {modelLoading
+                            ? "正在加载模型…"
+                            : selectedModel
+                            ? `${selectedModel}（不可用，请更换）`
+                            : "请选择模型"}
+                        </option>
+                      ) : null}
+                      {[
+                        { label: "文字聊天", image: false },
+                        { label: "图片生成", image: true },
+                      ].map((group) => {
+                        const options = models.filter(
+                          (model) => (model.kind === "image") === group.image,
+                        );
+                        return options.length ? (
+                          <optgroup key={group.label} label={group.label}>
+                            {options.map((model) => (
+                              <option key={model.id} value={model.id}>
+                                {model.name}
+                                {model.reasoning ? " · 推理" : ""}
+                                {modelDescription(model.id)
+                                  ? ` · ${modelDescription(model.id)}`
+                                  : ""}
+                              </option>
+                            ))}
+                          </optgroup>
+                        ) : null;
+                      })}
+                    </select>
+                  </label>
+                  <div className={styles.voiceTools}>
+                    <button
+                      type="button"
+                      className={`${styles.voiceButton} ${
+                        voice.phase === "recording" ? styles.voiceRecording : ""
+                      }`}
+                      aria-label={
+                        tapRecord
+                          ? "点击录音，再次点击发送"
+                          : "按住说话，松开发送，移出取消"
+                      }
+                      aria-pressed={voice.phase === "recording"}
+                      title={
+                        tapRecord
+                          ? "点击录音，再次点击发送"
+                          : "按住说话，松开发送"
+                      }
+                      aria-describedby="family-voice-help"
+                      disabled={
+                        imageMode ||
+                        ["processing", "transcribing"].includes(voice.phase) ||
+                        (voice.phase === "idle" &&
+                          (!voice.supported ||
+                            !!draft.trim() ||
+                            draftAttachments.hasAny() ||
+                            !!editingMessage ||
+                            sending ||
+                            cancelPending ||
+                            working ||
+                            checking ||
+                            detailLoading ||
+                            !chosenModel ||
+                            voice.busy ||
+                            realtimeBusy.current))
+                      }
+                      onContextMenu={(event) => event.preventDefault()}
+                      onPointerDown={(event) => {
+                        if (
+                          tapRecord ||
+                          (event.pointerType === "mouse" && event.button !== 0)
+                        )
+                          return;
+                        event.preventDefault();
+                        setVoiceOutside(false);
+                        try {
+                          event.currentTarget.setPointerCapture(
+                            event.pointerId,
+                          );
+                        } catch {
+                          /* leaving the button cancels without capture */
+                        }
+                        voice.startRecording();
+                      }}
+                      onPointerMove={(event) => {
+                        if (
+                          !tapRecord &&
+                          ["recording", "permission"].includes(voice.phase) &&
+                          !withinVoiceButton(event)
+                        ) {
+                          setVoiceOutside(true);
+                          voice.cancelRecording();
+                          setNotice("已移出按钮，取消语音输入。");
+                        }
+                      }}
+                      onPointerUp={(event) => {
+                        if (tapRecord) return;
+                        event.preventDefault();
+                        if (withinVoiceButton(event)) voice.releaseRecording();
+                        else {
+                          voice.cancelRecording();
+                          setNotice("已取消语音输入。");
+                        }
+                        try {
+                          event.currentTarget.releasePointerCapture(
+                            event.pointerId,
+                          );
+                        } catch {
+                          /* already released */
+                        }
+                      }}
+                      onPointerCancel={() => voice.cancelRecording()}
+                      onLostPointerCapture={voice.cancelGesture}
+                      onPointerLeave={(event) => {
+                        if (
+                          !tapRecord &&
+                          ["recording", "permission"].includes(voice.phase)
+                        ) {
+                          setVoiceOutside(true);
+                          voice.cancelRecording();
+                          setNotice("已移出按钮，取消语音输入。");
+                        }
+                      }}
+                      onKeyDown={(event) => {
+                        if (tapRecord || ![" ", "Enter"].includes(event.key))
+                          return;
+                        event.preventDefault();
+                        if (!event.repeat) {
+                          setVoiceOutside(false);
+                          voice.startRecording();
+                        }
+                      }}
+                      onKeyUp={(event) => {
+                        if (tapRecord || ![" ", "Enter"].includes(event.key))
+                          return;
+                        event.preventDefault();
+                        voice.releaseRecording();
+                      }}
+                      onBlur={voice.cancelGesture}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        if (!tapRecord) return;
+                        if (voice.phase === "recording")
+                          voice.releaseRecording();
+                        else if (voice.phase === "permission")
+                          voice.cancelRecording();
+                        else voice.startRecording();
+                      }}
+                    >
+                      <FamilyIcon name="mic" />
+                      <span className={styles.srOnly}>
+                        {voice.phase === "recording"
+                          ? tapRecord
+                            ? "结束并发送"
+                            : voiceOutside
+                            ? "松手取消"
+                            : "松开发送"
+                          : voice.phase === "permission"
+                          ? "等待麦克风…"
+                          : tapRecord
+                          ? "点击开始录音"
+                          : "按住说话"}
+                      </span>
                     </button>
-                  )}
+                    <button
+                      type="button"
+                      className={styles.voiceButton}
+                      aria-label="开始连续语音"
+                      title={
+                        realtime.supported
+                          ? "实时语音对话"
+                          : "此浏览器暂不支持连续语音"
+                      }
+                      disabled={
+                        imageMode ||
+                        !realtime.supported ||
+                        voice.busy ||
+                        sending ||
+                        working ||
+                        checking ||
+                        detailLoading ||
+                        !!editingMessage ||
+                        draftAttachments.preparing ||
+                        cancelPending ||
+                        !identityVerified.current
+                      }
+                      onClick={() => void realtime.start()}
+                    >
+                      <FamilyIcon name="voice" />
+                      <span className={styles.srOnly}>连续语音</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.iconButton}
+                      aria-label="语音设置"
+                      onClick={() => setSettingsOpen(true)}
+                    >
+                      <FamilyIcon name="settings" size={16} />
+                    </button>
+                  </div>
+                  <div className={styles.composerTrailing}>
+                    {sending || cancelPending ? (
+                      <button
+                        type="button"
+                        className={styles.secondary}
+                        disabled={cancelPending || !activeGeneration.current}
+                        onClick={() => void stopGeneration()}
+                      >
+                        {cancelPending
+                          ? "正在停止…"
+                          : activeGeneration.current
+                          ? "停止回复"
+                          : "正在连接…"}
+                      </button>
+                    ) : (
+                      <button
+                        type="submit"
+                        className={styles.sendButton}
+                        aria-label={
+                          imageMode
+                            ? editingMessage
+                              ? "保存并重新生成图片"
+                              : "生成图片"
+                            : editingMessage
+                            ? "保存并重新回复"
+                            : "发送 ↑"
+                        }
+                        title={
+                          imageMode
+                            ? editingMessage
+                              ? "保存并重新生成图片"
+                              : "生成图片"
+                            : editingMessage
+                            ? "保存并重新回复"
+                            : "发送消息"
+                        }
+                        disabled={
+                          (!draft.trim() &&
+                            (!!editingMessage || !draftAttachments.hasAny())) ||
+                          draftAttachments.preparing ||
+                          (!editingMessage &&
+                            (draftAttachments.hasErrors ||
+                              !!attachmentError)) ||
+                          checking ||
+                          !identityVerified.current ||
+                          working ||
+                          detailLoading ||
+                          cancelPending ||
+                          lastAssistantMessage?.status === "streaming" ||
+                          (selectedChat !== null && !activeChat) ||
+                          !chosenModel ||
+                          voice.busy ||
+                          realtimeBusy.current
+                        }
+                      >
+                        <FamilyIcon name="arrowUp" size={20} />
+                      </button>
+                    )}
+                  </div>
                 </div>
               </form>
             </>

@@ -104,6 +104,35 @@ const DEFAULT_MODELS = [
   "gpt-6.1-sol",
   "gpt-6-astra",
 ];
+const IMAGE_MODELS: Record<string, Omit<FamilyModel, "id">> = {
+  "gpt-image-2.5-flare": {
+    name: "GPT Image 2.5 Flare",
+    description: "图片生成 · 快速创作",
+    reasoning: false,
+    kind: "image",
+  },
+  "gpt-image-2.5-sunburst": {
+    name: "GPT Image 2.5 Sunburst",
+    description: "图片生成 · 精细画面",
+    reasoning: false,
+    kind: "image",
+  },
+  "gpt-image-1.5": {
+    name: "GPT Image 1.5",
+    description: "图片生成 · 通用绘图",
+    reasoning: false,
+    kind: "image",
+  },
+  "gpt-image-1-mini": {
+    name: "GPT Image 1 Mini",
+    description: "图片生成 · 轻量绘图",
+    reasoning: false,
+    kind: "image",
+  },
+};
+export function isImageModelId(value: string) {
+  return Object.hasOwn(IMAGE_MODELS, value);
+}
 // Capability admission is curated independently of account/model discovery.
 // PDF Chat Completions requires image-capable models:
 // https://developers.openai.com/api/docs/guides/file-inputs
@@ -149,12 +178,20 @@ export function modelCatalog(): FamilyModelCatalog {
     );
   return {
     defaultModel,
-    models: ids.map((id) => ({
-      id,
-      ...PROFILES[id],
-      supportsImages: ATTACHMENT_MODELS.has(id),
-      supportsPdf: ATTACHMENT_MODELS.has(id),
-    })),
+    models: [
+      ...ids.map((id) => ({
+        id,
+        ...PROFILES[id],
+        supportsImages: ATTACHMENT_MODELS.has(id),
+        supportsPdf: ATTACHMENT_MODELS.has(id),
+      })),
+      ...Object.entries(IMAGE_MODELS).map(([id, profile]) => ({
+        id,
+        ...profile,
+        supportsImages: false,
+        supportsPdf: false,
+      })),
+    ],
   };
 }
 
@@ -175,6 +212,12 @@ export function completionBody(
   model: FamilyModel,
   messages: CompletionMessage[],
 ) {
+  if (model.kind === "image")
+    throw new FamilyApiError(
+      400,
+      "图片模型请使用图片生成接口。",
+      "IMAGE_MODEL_REQUIRES_IMAGE_API",
+    );
   return {
     model: model.id,
     messages,

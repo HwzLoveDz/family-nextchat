@@ -105,14 +105,14 @@ describe("family-only visual preferences", () => {
     expect(hook.result.current.theme.id).toBe("paper");
   });
 
-  test("eight real radio choices apply immediately in the scoped portal and Escape restores button focus", () => {
+  test("all twelve radio choices apply immediately in the scoped portal and Escape restores button focus", () => {
     render(<Harness />);
     const trigger = screen.getByRole("button", { name: "主题" });
     fireEvent.click(trigger);
     const panel = screen.getByRole("region", { name: "主题设置" });
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     expect(trigger).toHaveAttribute("aria-controls", panel.id);
-    expect(screen.getAllByRole("radio")).toHaveLength(8);
+    expect(screen.getAllByRole("radio")).toHaveLength(12);
     expect(
       screen.getByRole("radio", { name: getFamilyTheme("paper").label }),
     ).toHaveFocus();
@@ -191,11 +191,57 @@ describe("family-only visual preferences", () => {
         FAMILY_THEMES.map((theme) =>
           screen.getByRole("radio", { name: theme.label }),
         ),
-      ).toHaveLength(8);
+      ).toHaveLength(12);
     } finally {
       cleanup();
       if (original) Object.defineProperty(window, "visualViewport", original);
       else Reflect.deleteProperty(window, "visualViewport");
     }
   });
+
+  test.each(["slate", "deepsea", "plum", "espresso"])(
+    "%s is a complete dark palette with readable primary, muted, and accent text",
+    (id) => {
+      const selected = getFamilyTheme(id);
+      expect(selected.id).toBe(id);
+      expect(selected.dark).toBe(true);
+      expect(Object.keys(selected.variables)).toEqual(
+        Object.keys(getFamilyTheme("paper").variables),
+      );
+      const luminance = (hex: string) => {
+        const channels = [1, 3, 5].map((offset) => {
+          const channel = parseInt(hex.slice(offset, offset + 2), 16) / 255;
+          return channel <= 0.04045
+            ? channel / 12.92
+            : Math.pow((channel + 0.055) / 1.055, 2.4);
+        });
+        return (
+          channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722
+        );
+      };
+      const ratio = (foreground: string, background: string) => {
+        const values = [luminance(foreground), luminance(background)].sort(
+          (a, b) => b - a,
+        );
+        return (values[0] + 0.05) / (values[1] + 0.05);
+      };
+      const colors = selected.variables;
+      for (const surface of [
+        "--paper",
+        "--panel-bg",
+        "--sidebar-bg",
+        "--user-bg",
+      ] as const) {
+        expect(ratio(colors["--ink"], colors[surface])).toBeGreaterThanOrEqual(
+          4.5,
+        );
+        expect(
+          ratio(colors["--muted"], colors[surface]),
+        ).toBeGreaterThanOrEqual(4.5);
+      }
+      expect(
+        ratio(colors["--on-accent"], colors["--accent"]),
+      ).toBeGreaterThanOrEqual(4.5);
+    },
+  );
 });

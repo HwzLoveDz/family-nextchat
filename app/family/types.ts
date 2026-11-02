@@ -1,3 +1,11 @@
+import type {
+  FamilyGeneratedImageMeta,
+  FamilyImageOptions,
+} from "./image-types";
+export type {
+  FamilyGeneratedImageMeta,
+  FamilyImageOptions,
+} from "./image-types";
 /** Public JSON contracts shared by the family UI and server. No secrets here. */
 export type FamilyRole = "admin" | "member";
 export type FamilyStatus = "pending" | "approved" | "disabled";
@@ -57,6 +65,8 @@ export interface FamilyMessage {
   model?: string | null;
   superseded?: boolean;
   attachments?: FamilyAttachmentMeta[];
+  generatedImages?: FamilyGeneratedImageMeta[];
+  imageOptions?: FamilyImageOptions;
 }
 export interface FamilyAttachmentInput {
   name: string;
@@ -79,6 +89,7 @@ export interface FamilyModel {
   name: string;
   description: string;
   reasoning: boolean;
+  kind?: "text" | "image";
   supportsImages?: boolean;
   supportsPdf?: boolean;
 }
@@ -89,6 +100,7 @@ export interface FamilyModelCatalog {
 export type FamilyMessageRequest = {
   requestId: string;
   model?: string;
+  imageOptions?: FamilyImageOptions;
 } & (
   | {
       mode?: "send";

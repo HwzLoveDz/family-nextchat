@@ -59,6 +59,14 @@
     padding: 8px 10px;
     background: var(--paper);
   }
+  select {
+    color-scheme: inherit;
+  }
+  select option,
+  select optgroup {
+    color: var(--ink);
+    background: var(--paper);
+  }
   h2,
   h3,
   p {

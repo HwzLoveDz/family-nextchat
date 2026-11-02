@@ -2,7 +2,7 @@ import "server-only";
 import { getPool, transaction } from "./db";
 import { FamilyApiError } from "./errors";
 
-export const FAMILY_APPLICATION_SCHEMA_VERSION = 7;
+export const FAMILY_APPLICATION_SCHEMA_VERSION = 8;
 
 /** Application-only, additive upgrade. The caller owns the transaction and schema lock. */
 export const FAMILY_APPLICATION_UPGRADE_SQL = String.raw`
@@ -167,12 +167,32 @@ CREATE TABLE IF NOT EXISTS family_provider_observation (
   runtime_state text NOT NULL DEFAULT 'unobserved' CHECK(runtime_state IN ('unobserved','accepted','quota_limited')),
   runtime_observed_at timestamptz
 );
+ALTER TABLE family_generation ADD COLUMN IF NOT EXISTS image_size text;
+ALTER TABLE family_generation ADD COLUMN IF NOT EXISTS image_quality text;
+CREATE TABLE IF NOT EXISTS family_generated_image (
+  id uuid PRIMARY KEY,
+  user_id text NOT NULL REFERENCES "user"(id),
+  chat_id uuid NOT NULL,
+  generation_id uuid NOT NULL UNIQUE REFERENCES family_generation(id),
+  message_id uuid NOT NULL UNIQUE,
+  name text NOT NULL CHECK(length(name) BETWEEN 1 AND 160),
+  media_type text NOT NULL CHECK(media_type='image/jpeg'),
+  byte_size integer NOT NULL CHECK(byte_size BETWEEN 1 AND 4194304),
+  width integer NOT NULL CHECK(width BETWEEN 1 AND 1536),
+  height integer NOT NULL CHECK(height BETWEEN 1 AND 1536),
+  model text NOT NULL CHECK(length(model) BETWEEN 1 AND 100),
+  data bytea NOT NULL CHECK(octet_length(data)=byte_size),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  FOREIGN KEY(chat_id,user_id) REFERENCES family_chat(id,user_id),
+  FOREIGN KEY(message_id,chat_id) REFERENCES family_message(id,chat_id)
+);
+CREATE INDEX IF NOT EXISTS family_generated_image_owner ON family_generated_image(user_id,created_at);
 CREATE TABLE IF NOT EXISTS family_schema_version (
   id integer PRIMARY KEY CHECK (id = 1),
   version integer NOT NULL CHECK (version >= 0),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
-INSERT INTO family_schema_version(id,version) VALUES(1,7)
+INSERT INTO family_schema_version(id,version) VALUES(1,8)
 ON CONFLICT(id) DO UPDATE
   SET version=GREATEST(family_schema_version.version,EXCLUDED.version),updated_at=now();`;
 
@@ -202,9 +222,24 @@ export async function applicationUpgradeStatus(): Promise<{
   const metadata = (
     await pool.query(`SELECT
       to_regclass('family_schema_version') IS NOT NULL AS version_table_exists,
-      (SELECT count(*) = 108 FROM information_schema.columns
+      (SELECT count(*) = 123 FROM information_schema.columns
         WHERE table_schema = current_schema()
           AND (table_name,column_name,data_type,is_nullable) IN (
+            ('family_generation','image_size','text','YES'),
+            ('family_generation','image_quality','text','YES'),
+            ('family_generated_image','id','uuid','NO'),
+            ('family_generated_image','user_id','text','NO'),
+            ('family_generated_image','chat_id','uuid','NO'),
+            ('family_generated_image','generation_id','uuid','NO'),
+            ('family_generated_image','message_id','uuid','NO'),
+            ('family_generated_image','name','text','NO'),
+            ('family_generated_image','media_type','text','NO'),
+            ('family_generated_image','byte_size','integer','NO'),
+            ('family_generated_image','width','integer','NO'),
+            ('family_generated_image','height','integer','NO'),
+            ('family_generated_image','model','text','NO'),
+            ('family_generated_image','data','bytea','NO'),
+            ('family_generated_image','created_at','timestamp with time zone','NO'),
             ('family_chat','model','text','YES'),
             ('family_chat','pinned_at','timestamp with time zone','YES'),
             ('family_generation','actual_model','text','YES'),

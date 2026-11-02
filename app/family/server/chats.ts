@@ -12,7 +12,23 @@ import {
   rejectExhaustedQuota,
   withProviderKey,
 } from "./provider-keys";
-import { allowedModel, completionBody, modelCatalog } from "./models";
+import {
+  allowedModel,
+  completionBody,
+  modelCatalog,
+  isImageModelId,
+} from "./models";
+import {
+  DEFAULT_IMAGE_OPTIONS,
+  FAMILY_IMAGE_SIZES,
+  FAMILY_IMAGE_QUALITIES,
+  type FamilyImageOptions,
+} from "../image-types";
+import {
+  loadGeneratedImages,
+  storeGeneratedImage,
+  type GeneratedImageAsset,
+} from "./generated-images";
 import {
   cursorScope,
   decodeWorkspaceCursor,
@@ -84,6 +100,12 @@ function messageJson(row: Record<string, any>): FamilyMessage {
     model: row.actual_model ?? null,
     superseded: !!row.superseded_at,
     ...(row.attachments?.length ? { attachments: row.attachments } : {}),
+    ...(row.generatedImages?.length
+      ? { generatedImages: row.generatedImages }
+      : {}),
+    ...(row.image_size && row.image_quality
+      ? { imageOptions: { size: row.image_size, quality: row.image_quality } }
+      : {}),
     ...(row.role === "assistant" ? { usage: usageJson(row) } : {}),
   };
 }
@@ -203,7 +225,7 @@ export async function updateChat(
     if (
       (
         await client.query(
-          "SELECT 1 FROM family_generation WHERE chat_id=$1 AND state='running' AND started_at>now()-interval '90 seconds'",
+          "SELECT 1 FROM family_generation WHERE chat_id=$1 AND state='running' AND started_at>now()-CASE WHEN model LIKE 'gpt-image-%' THEN interval '240 seconds' ELSE interval '90 seconds' END",
           [chatId],
         )
       ).rowCount
@@ -256,7 +278,7 @@ export async function chatDetail(
     beforePosition = pivot.position;
   }
   const messages = await getPool().query(
-    "SELECT m.*,g.model AS requested_model,g.actual_model,g.superseded_at,g.input_tokens,g.output_tokens,g.usage_source FROM family_message m JOIN family_generation g ON g.id=m.generation_id WHERE m.chat_id=$1" +
+    "SELECT m.*,g.model AS requested_model,g.actual_model,g.superseded_at,g.input_tokens,g.output_tokens,g.usage_source,g.image_size,g.image_quality FROM family_message m JOIN family_generation g ON g.id=m.generation_id WHERE m.chat_id=$1" +
       (!userId && includeArchived ? "" : " AND g.superseded_at IS NULL") +
       " AND ($2::bigint IS NULL OR m.position<$2::bigint) ORDER BY m.position DESC LIMIT 81",
     [chatId, beforePosition],
@@ -266,11 +288,21 @@ export async function chatDetail(
     getPool(),
     page.filter((row) => row.role === "user").map((row) => row.id),
   );
+  const generatedImages = await loadGeneratedImages(
+    getPool(),
+    page
+      .filter(
+        (row) =>
+          row.role === "assistant" && isImageModelId(row.requested_model ?? ""),
+      )
+      .map((row) => row.id),
+  );
   return {
     chat: chatJson(result.rows[0]),
     messages: page.map((row) =>
       messageJson({
         ...row,
+        generatedImages: generatedImages.get(row.id),
         attachments: attachments
           .get(row.id)
           ?.map(({ data, textContent, textCharacters, ...meta }) => meta),
@@ -293,7 +325,7 @@ export async function deleteChat(chatId: string, userId: string) {
     if (
       (
         await client.query(
-          "SELECT 1 FROM family_generation WHERE chat_id=$1 AND state='running' AND started_at>now()-interval '90 seconds'",
+          "SELECT 1 FROM family_generation WHERE chat_id=$1 AND state='running' AND started_at>now()-CASE WHEN model LIKE 'gpt-image-%' THEN interval '240 seconds' ELSE interval '90 seconds' END",
           [chatId],
         )
       ).rowCount
@@ -309,6 +341,8 @@ export async function deleteChat(chatId: string, userId: string) {
 }
 interface GenerationStart {
   id: string;
+  userId?: string;
+  imageOptions?: FamilyImageOptions;
   assistantId: string;
   userMessage: FamilyMessage;
   assistantMessage: FamilyMessage;
@@ -356,6 +390,29 @@ interface GenerationIntent {
   sourceMessageId: string | null;
   requestedModel?: string;
   attachments: PreparedAttachment[];
+  imageOptions?: FamilyImageOptions;
+}
+export function validatedImageOptions(value: unknown): FamilyImageOptions {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).some((key) => !["size", "quality"].includes(key))
+  )
+    throw new FamilyApiError(400, "图片设置无效。", "INVALID_IMAGE_OPTIONS");
+  const input = value as Record<string, unknown>;
+  const size = input.size ?? DEFAULT_IMAGE_OPTIONS.size;
+  const quality = input.quality ?? DEFAULT_IMAGE_OPTIONS.quality;
+  if (
+    !FAMILY_IMAGE_SIZES.includes(size as any) ||
+    !FAMILY_IMAGE_QUALITIES.includes(quality as any)
+  )
+    throw new FamilyApiError(
+      400,
+      "请选择列表中的图片尺寸和画质。",
+      "INVALID_IMAGE_OPTIONS",
+    );
+  return { size, quality } as FamilyImageOptions;
 }
 function generationIntent(body: Record<string, unknown>): GenerationIntent {
   const mode = body.mode === undefined ? "send" : body.mode;
@@ -379,6 +436,7 @@ function generationIntent(body: Record<string, unknown>): GenerationIntent {
           "mode",
           "sourceMessageId",
           "attachments",
+          "imageOptions",
         ].includes(key),
     )
   )
@@ -423,9 +481,17 @@ function generationIntent(body: Record<string, unknown>): GenerationIntent {
     sourceMessageId,
     requestedModel: body.model as string | undefined,
     attachments: [],
+    ...(body.imageOptions !== undefined
+      ? { imageOptions: validatedImageOptions(body.imageOptions) }
+      : {}),
   };
 }
-function intentHash(chatId: string, intent: GenerationIntent, model: string) {
+function intentHash(
+  chatId: string,
+  intent: GenerationIntent,
+  model: string,
+  defaultOptions = DEFAULT_IMAGE_OPTIONS,
+) {
   return digest(
     JSON.stringify({
       chatId,
@@ -433,6 +499,9 @@ function intentHash(chatId: string, intent: GenerationIntent, model: string) {
       model,
       mode: intent.mode,
       sourceMessageId: intent.sourceMessageId,
+      ...(isImageModelId(model)
+        ? { imageOptions: intent.imageOptions ?? defaultOptions }
+        : {}),
       ...(intent.attachments.length
         ? {
             attachments: intent.attachments.map(
@@ -465,7 +534,20 @@ async function prepare(
   ).rows[0];
   if (existing) {
     const requested = intent.requestedModel ?? existing.model;
-    const expected = intentHash(chatId, intent, requested);
+    if (!isImageModelId(requested) && intent.imageOptions)
+      throw new FamilyApiError(
+        400,
+        "图片设置只适用于图片模型。",
+        "INVALID_IMAGE_OPTIONS",
+      );
+    const expected = intentHash(
+      chatId,
+      intent,
+      requested,
+      existing.image_size && existing.image_quality
+        ? { size: existing.image_size, quality: existing.image_quality }
+        : DEFAULT_IMAGE_OPTIONS,
+    );
     const legacy =
       intent.mode === "send" &&
       !intent.sourceMessageId &&
@@ -500,13 +582,17 @@ async function prepare(
       );
     const messages = (
       await client.query(
-        "SELECT m.*,g.model AS requested_model,g.actual_model,g.superseded_at,g.input_tokens,g.output_tokens,g.usage_source FROM family_message m JOIN family_generation g ON g.id=m.generation_id WHERE generation_id=$1 ORDER BY position",
+        "SELECT m.*,g.model AS requested_model,g.actual_model,g.superseded_at,g.input_tokens,g.output_tokens,g.usage_source,g.image_size,g.image_quality FROM family_message m JOIN family_generation g ON g.id=m.generation_id WHERE generation_id=$1 ORDER BY position",
         [existing.id],
       )
     ).rows;
     const metadata = await loadMessageAttachments(
       client,
       messages.filter((row) => row.role === "user").map((row) => row.id),
+    );
+    const generatedImages = await loadGeneratedImages(
+      client,
+      isImageModelId(existing.model) ? [messages[1].id] : [],
     );
     const replaced = existing.source_generation_id
       ? (
@@ -525,7 +611,10 @@ async function prepare(
           .get(messages[0].id)
           ?.map(({ data, textContent, textCharacters, ...meta }) => meta),
       }),
-      assistantMessage: messageJson(messages[1]),
+      assistantMessage: messageJson({
+        ...messages[1],
+        generatedImages: generatedImages.get(messages[1].id),
+      }),
       history: [],
       replay: true,
       usage: usageJson(existing),
@@ -534,15 +623,34 @@ async function prepare(
         name: existing.model,
         description: "",
         reasoning: false,
+        ...(isImageModelId(existing.model) ? { kind: "image" as const } : {}),
       },
+      ...(isImageModelId(existing.model)
+        ? {
+            imageOptions:
+              existing.image_size && existing.image_quality
+                ? { size: existing.image_size, quality: existing.image_quality }
+                : DEFAULT_IMAGE_OPTIONS,
+          }
+        : {}),
       replacedMessageIds: replaced,
     };
   }
   const model = allowedModel(
     intent.requestedModel ?? owner.rows[0].model ?? modelCatalog().defaultModel,
   );
+  if (model.kind !== "image" && intent.imageOptions)
+    throw new FamilyApiError(
+      400,
+      "图片设置只适用于图片模型。",
+      "INVALID_IMAGE_OPTIONS",
+    );
+  let imageOptions =
+    model.kind === "image"
+      ? intent.imageOptions ?? { ...DEFAULT_IMAGE_OPTIONS }
+      : undefined;
   const stale = await client.query(
-    "UPDATE family_generation SET state='partial',finished_at=now() WHERE user_id=$1 AND state='running' AND started_at<now()-interval '90 seconds' RETURNING id",
+    "UPDATE family_generation SET state='partial',finished_at=now() WHERE user_id=$1 AND state='running' AND started_at<now()-CASE WHEN model LIKE 'gpt-image-%' THEN interval '240 seconds' ELSE interval '90 seconds' END RETURNING id",
     [userId],
   );
   for (const row of stale.rows)
@@ -578,7 +686,7 @@ async function prepare(
       throw new FamilyApiError(404, "原消息不存在。", "MESSAGE_NOT_FOUND");
     const last = (
       await client.query(
-        "SELECT g.id,g.state,u.id AS user_message_id,u.content AS user_content,a.id AS assistant_message_id FROM family_generation g JOIN family_message u ON u.generation_id=g.id AND u.role='user' JOIN family_message a ON a.generation_id=g.id AND a.role='assistant' WHERE g.chat_id=$1 AND g.superseded_at IS NULL ORDER BY u.position DESC LIMIT 1 FOR UPDATE OF g",
+        "SELECT g.id,g.state,u.id AS user_message_id,u.content AS user_content,a.id AS assistant_message_id,g.image_size,g.image_quality FROM family_generation g JOIN family_message u ON u.generation_id=g.id AND u.role='user' JOIN family_message a ON a.generation_id=g.id AND a.role='assistant' WHERE g.chat_id=$1 AND g.superseded_at IS NULL ORDER BY u.position DESC LIMIT 1 FOR UPDATE OF g",
         [chatId],
       )
     ).rows[0];
@@ -613,6 +721,16 @@ async function prepare(
     sourceUserMessage = last.user_message_id;
     replacedMessageIds = [last.user_message_id, last.assistant_message_id];
     if (intent.mode !== "edit") content = last.user_content;
+    if (
+      model.kind === "image" &&
+      !intent.imageOptions &&
+      last.image_size &&
+      last.image_quality
+    )
+      imageOptions = validatedImageOptions({
+        size: last.image_size,
+        quality: last.image_quality,
+      });
   }
   const count = await client.query(
     "SELECT count(*)::int AS count FROM family_message WHERE chat_id=$1",
@@ -634,27 +752,32 @@ async function prepare(
   const currentFiles: SavedAttachment[] = sourceUserMessage
     ? inherited
     : intent.attachments.map((file) => ({ id: "", ...file }));
-  const history = await attachmentHistory(
-    client,
-    model,
-    content,
-    currentFiles,
-    previous,
-  );
+  if (model.kind === "image" && currentFiles.length)
+    throw new FamilyApiError(
+      400,
+      "图片模型目前使用文字描述生成图片，请先移除附件。",
+      "IMAGE_ATTACHMENTS_UNSUPPORTED",
+    );
+  const history =
+    model.kind === "image"
+      ? []
+      : await attachmentHistory(client, model, content, currentFiles, previous);
   const id = randomUUID();
   const userMessageId = randomUUID();
   const assistantId = randomUUID();
   await client.query(
-    "INSERT INTO family_generation(id,user_id,chat_id,request_id,request_hash,model,mode,source_generation_id,state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'running')",
+    "INSERT INTO family_generation(id,user_id,chat_id,request_id,request_hash,model,mode,source_generation_id,state,image_size,image_quality) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'running',$9,$10)",
     [
       id,
       userId,
       chatId,
       requestId,
-      intentHash(chatId, intent, model.id),
+      intentHash(chatId, intent, model.id, imageOptions),
       model.id,
       intent.mode,
       sourceGeneration,
+      imageOptions?.size ?? null,
+      imageOptions?.quality ?? null,
     ],
   );
   const rows = (
@@ -693,7 +816,9 @@ async function prepare(
   );
   return {
     id,
+    userId,
     assistantId,
+    imageOptions,
     userMessage: messageJson({
       ...rows[0],
       requested_model: model.id,
@@ -784,7 +909,9 @@ export async function generate(
   const onAbort = () => abort.abort();
   request.signal.addEventListener("abort", onAbort, { once: true });
   if (request.signal.aborted) abort.abort();
-  const timeout = setTimeout(onAbort, 40_000);
+  const isImage = started.model.kind === "image";
+  let imageActualModel: string | null = null;
+  const timeout = setTimeout(onAbort, isImage ? 180_000 : 40_000);
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       const emit = (event: FamilyStreamEvent) => {
@@ -798,6 +925,17 @@ export async function generate(
           abort.abort();
         }
       };
+      const keepAlive = isImage
+        ? setInterval(() => {
+            if (closed || abort.signal.aborted) return;
+            try {
+              controller.enqueue(encoder.encode(": generating image\n\n"));
+            } catch {
+              closed = true;
+              abort.abort();
+            }
+          }, 15000)
+        : undefined;
       const work = async () => {
         let lastSave = Date.now();
         let cancellationRequested = false;
@@ -859,6 +997,52 @@ export async function generate(
               message: started.assistantMessage,
               usage: started.usage!,
             });
+            return;
+          }
+          if (isImage) {
+            const { requestGeneratedImage } = await import("./image-provider");
+            const image = await requestGeneratedImage({
+              model: started.model.id,
+              prompt: started.userMessage.content,
+              options: started.imageOptions ?? DEFAULT_IMAGE_OPTIONS,
+              userId,
+              signal: abort.signal,
+              onUsage: (reported, actual) => {
+                usage = reported;
+                imageActualModel = actual;
+              },
+            });
+            usage = image.usage;
+            imageActualModel = image.actualModel;
+            if (abort.signal.aborted)
+              throw new FamilyApiError(
+                502,
+                "图片生成已停止。",
+                "IMAGE_GENERATION_CANCELLED",
+              );
+            output = "图片已生成。";
+            const message = await finishGeneration(
+              started,
+              output,
+              "complete",
+              usage,
+              imageActualModel,
+              {
+                bytes: image.bytes,
+                width: image.width,
+                height: image.height,
+                mediaType: "image/jpeg",
+                model: started.model.id,
+              },
+            );
+            if (message.status !== "complete") {
+              emit({
+                type: "error",
+                message: "图片生成已停止，已保存实际用量。",
+              });
+              return;
+            }
+            emit({ type: "done", message, usage });
             return;
           }
           // Only an explicit, pre-acceptance quota rejection may select another
@@ -951,7 +1135,11 @@ export async function generate(
           emit({ type: "done", message, usage });
         } catch (error) {
           abort.abort();
-          usage = parser.usage;
+          if (!isImage) usage = parser.usage;
+          // A completed provider response is not a published image until its
+          // private asset and message commit together. Do not save a success
+          // stub when decoding or asset persistence failed after billing.
+          if (isImage) output = "";
           let saved = true;
           if (!started.replay) {
             await finishGeneration(
@@ -959,7 +1147,7 @@ export async function generate(
               output,
               output ? "partial" : "error",
               usage,
-              parser.actualModel,
+              isImage ? imageActualModel : parser.actualModel,
             ).catch(() => {
               saved = false;
             });
@@ -967,17 +1155,22 @@ export async function generate(
           emit({
             type: "error",
             message: !saved
-              ? "回复已中断，保存未完成，请稍后刷新检查。"
+              ? isImage
+                ? "图片保存未完成，请刷新确认，避免重复生成。"
+                : "回复已中断，保存未完成，请稍后刷新检查。"
               : cancellationRequested
               ? "生成已停止，已保存收到的内容和实际用量。"
               : statusFailure
               ? statusFailure.message
               : error instanceof FamilyApiError
               ? error.message
+              : isImage
+              ? "图片生成或保存未完成，请刷新确认后再决定是否重试。"
               : "回复已中断，已保存收到的内容，请刷新后查看。",
           });
         } finally {
           clearInterval(statusTimer);
+          if (keepAlive !== undefined) clearInterval(keepAlive);
           clearTimeout(timeout);
           await checkInFlight;
           request.signal.removeEventListener("abort", onAbort);
@@ -1012,6 +1205,7 @@ export async function finishGeneration(
   state: "complete" | "partial" | "error",
   usage: FamilyUsage,
   actualModel: string | null,
+  image?: GeneratedImageAsset,
 ) {
   return transaction(async (client) => {
     const generation = (
@@ -1021,11 +1215,24 @@ export async function finishGeneration(
       )
     ).rows[0];
     if (!generation) throw new FamilyApiError(404, "回复不存在。");
-    const finalState = generation.cancel_requested_at
-      ? content
-        ? "partial"
-        : "error"
-      : state;
+    const approved =
+      image && started.userId
+        ? (
+            await client.query(
+              'SELECT status FROM "user" WHERE id=$1 FOR SHARE',
+              [started.userId],
+            )
+          ).rows[0]?.status === "approved"
+        : true;
+    const finalState =
+      generation.cancel_requested_at || !approved
+        ? image
+          ? "error"
+          : content
+          ? "partial"
+          : "error"
+        : state;
+    if (image && finalState !== "complete") content = "";
     await client.query(
       "UPDATE family_generation SET state=$1,finished_at=now(),input_tokens=$2,output_tokens=$3,usage_source=$4,actual_model=$6 WHERE id=$5",
       [
@@ -1045,9 +1252,24 @@ export async function finishGeneration(
       "UPDATE family_chat SET updated_at=now() WHERE id=(SELECT chat_id FROM family_generation WHERE id=$1)",
       [started.id],
     );
+    const generatedImages =
+      image && finalState === "complete" && started.userId
+        ? [
+            await storeGeneratedImage(
+              client,
+              started.userId,
+              started.id,
+              started.assistantId,
+              image,
+            ),
+          ]
+        : [];
     return {
       ...messageJson({
         ...result.rows[0],
+        generatedImages,
+        image_size: started.imageOptions?.size,
+        image_quality: started.imageOptions?.quality,
         requested_model: started.model.id,
         actual_model: actualModel,
       }),

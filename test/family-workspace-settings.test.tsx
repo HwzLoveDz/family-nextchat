@@ -95,7 +95,7 @@ test("dialog traps focus, supports tab arrows, Escape and restores launch focus"
     key: "ArrowRight",
   });
   expect(screen.getByRole("tab", { name: "外观" })).toHaveFocus();
-  expect(screen.getAllByRole("radio")).toHaveLength(8);
+  expect(screen.getAllByRole("radio")).toHaveLength(12);
   fireEvent.keyDown(document, { key: "Escape" });
   expect(p.onClose).toHaveBeenCalledTimes(1);
   view.rerender(<FamilySettings {...p} open={false} />);

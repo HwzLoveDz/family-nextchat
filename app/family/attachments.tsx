@@ -199,6 +199,7 @@ export function AttachmentComposer({
   error,
   onFiles,
   onRemove,
+  compact = false,
 }: {
   items: DraftAttachment[];
   disabled: boolean;
@@ -206,10 +207,14 @@ export function AttachmentComposer({
   error?: string;
   onFiles: (files: File[]) => void;
   onRemove: (id: string) => void;
+  compact?: boolean;
 }) {
   const input = useRef<HTMLInputElement>(null);
   return (
-    <section className={styles.composer} aria-label="待发送附件">
+    <section
+      className={`${styles.composer} ${compact ? styles.compact : ""}`}
+      aria-label="待发送附件"
+    >
       <input
         ref={input}
         className={styles.fileInput}
@@ -232,6 +237,12 @@ export function AttachmentComposer({
         <button
           type="button"
           className={styles.pickButton}
+          aria-label="＋ 选择附件"
+          title={
+            editing
+              ? "添加附件 · 原附件会一并保留"
+              : "添加图片、PDF 或文本 · 最多 3 个，合计 2 MB"
+          }
           disabled={
             disabled ||
             editing ||
@@ -240,7 +251,7 @@ export function AttachmentComposer({
           }
           onClick={() => input.current?.click()}
         >
-          ＋ 选择附件
+          {compact ? <span aria-hidden="true">＋</span> : "＋ 选择附件"}
         </button>
         <small>
           {editing
@@ -302,11 +313,13 @@ function SavedAttachment({
   attachment,
   scope,
   admin,
+  source,
   onUnauthorized,
 }: {
   attachment: FamilyAttachmentMeta;
   scope: AttachmentScope;
   admin: boolean;
+  source: "attachment" | "generated";
   onUnauthorized: () => void;
 }) {
   const latest = useRef({ scope, onUnauthorized });
@@ -328,7 +341,10 @@ function SavedAttachment({
     urls = useRef(new Set<string>()),
     timers = useRef(new Set<number>());
   const alive = useRef(true);
-  const key = `${scope.key}:${admin ? "admin" : "owner"}:${attachment.id}`;
+  const key = `${scope.key}:${admin ? "admin" : "owner"}:${source}:${
+    attachment.id
+  }`;
+  const fileLabel = source === "generated" ? "图片" : "附件";
   const readable = scope.readable !== false;
   const currentKey = useRef(key);
   currentKey.current = key;
@@ -354,14 +370,16 @@ function SavedAttachment({
     };
   }, [key]);
   const load = async (controller: AbortController, captured: string) => {
+    if (!latest.current.scope.isCurrent())
+      throw new DOMException("Aborted", "AbortError");
     const timer = window.setTimeout(() => controller.abort(), 30000);
     timers.current.add(timer);
     controllers.current.add(controller);
     try {
       const response = await fetch(
-        `/api/family/${admin ? "admin/" : ""}attachments/${encodeURIComponent(
-          attachment.id,
-        )}`,
+        `/api/family/${admin ? "admin/" : ""}${
+          source === "generated" ? "generated-images" : "attachments"
+        }/${encodeURIComponent(attachment.id)}`,
         {
           credentials: "include",
           cache: "no-store",
@@ -378,7 +396,7 @@ function SavedAttachment({
       if (!response.ok) {
         if ([401, 403].includes(response.status))
           latest.current.onUnauthorized();
-        throw new Error("附件暂不可用，请稍后重试。");
+        throw new Error(`${fileLabel}暂不可用，请稍后重试。`);
       }
       const blob = await response.blob();
       if (
@@ -388,8 +406,18 @@ function SavedAttachment({
         !latest.current.scope.isCurrent()
       )
         throw new DOMException("Aborted", "AbortError");
-      if (blob.size > ATTACHMENT_LIMITS.fileBytes)
-        throw new Error("附件数据超出限制。");
+      if (
+        blob.size >
+        (source === "generated" ? 4 * 1024 * 1024 : ATTACHMENT_LIMITS.fileBytes)
+      )
+        throw new Error(`${fileLabel}数据超出限制。`);
+      if (
+        source === "generated" &&
+        !["image/jpeg", "image/png", "image/webp"].includes(
+          blob.type.split(";")[0],
+        )
+      )
+        throw new Error("图片格式无法读取。");
       return blob;
     } finally {
       controller.abort();
@@ -440,10 +468,10 @@ function SavedAttachment({
         )
           setError(
             failure instanceof DOMException && failure.name === "AbortError"
-              ? "附件加载超时，请重试。"
+              ? `${fileLabel}加载超时，请重试。`
               : failure instanceof Error
               ? failure.message
-              : "附件加载失败。",
+              : `${fileLabel}加载失败。`,
           );
       });
     return () => {
@@ -496,7 +524,9 @@ function SavedAttachment({
         captured === currentKey.current &&
         latest.current.scope.isCurrent()
       )
-        setError(failure instanceof Error ? failure.message : "附件下载失败。");
+        setError(
+          failure instanceof Error ? failure.message : `${fileLabel}下载失败。`,
+        );
     } finally {
       if (alive.current && captured === currentKey.current)
         setDownloading(false);
@@ -533,6 +563,9 @@ function SavedAttachment({
         <strong>{attachment.name}</strong>
         <small>
           {attachmentSize(attachment.byteSize)}
+          {source === "generated" && attachment.width && attachment.height
+            ? ` · ${attachment.width} × ${attachment.height}`
+            : ""}
           {attachment.pages ? ` · ${attachment.pages} 页` : ""}
         </small>
         {error ? (
@@ -552,7 +585,11 @@ function SavedAttachment({
           disabled={downloading || !readable}
           onClick={() => void download()}
         >
-          {downloading ? "下载中…" : "下载附件"}
+          {downloading
+            ? "下载中…"
+            : source === "generated"
+            ? "下载图片"
+            : "下载附件"}
         </button>
       </div>
     </li>
@@ -563,22 +600,28 @@ export function MessageAttachments({
   attachments,
   scope,
   admin = false,
+  source = "attachment",
   onUnauthorized,
 }: {
   attachments?: FamilyAttachmentMeta[];
   scope: AttachmentScope;
   admin?: boolean;
+  source?: "attachment" | "generated";
   onUnauthorized: () => void;
 }) {
   if (!attachments?.length) return null;
   return (
-    <ul className={styles.savedList} aria-label="消息附件">
+    <ul
+      className={styles.savedList}
+      aria-label={source === "generated" ? "生成的图片" : "消息附件"}
+    >
       {attachments.map((attachment) => (
         <SavedAttachment
-          key={`${scope.key}:${attachment.id}`}
+          key={`${scope.key}:${source}:${attachment.id}`}
           attachment={attachment}
           scope={scope}
           admin={admin}
+          source={source}
           onUnauthorized={onUnauthorized}
         />
       ))}

@@ -133,13 +133,13 @@ describe("family application upgrade boundaries", () => {
       poolQuery.mock.calls.every(([sql]) => /^SELECT\b/.test(sql.trim())),
     ).toBe(true);
     expect(clientQuery).not.toHaveBeenCalled();
-    expect(poolQuery.mock.calls[0][0]).toContain("count(*) = 108");
+    expect(poolQuery.mock.calls[0][0]).toContain("count(*) = 123");
     expect(poolQuery.mock.calls[0][0]).toContain(
       "('family_generation','cancel_requested_at','timestamp with time zone','YES')",
     );
   });
 
-  test.each([undefined, 0, 1, 2, 3, 4, 5, 6, "7", -1])(
+  test.each([undefined, 0, 1, 2, 3, 4, 5, 6, 7, "8", -1])(
     "missing, old, or invalid version %p cannot pass readiness",
     async (version) => {
       poolQuery
@@ -155,10 +155,10 @@ describe("family application upgrade boundaries", () => {
     },
   );
 
-  test("a complete v7 schema is accepted through SELECTs alone", async () => {
+  test("a complete v8 schema is accepted through SELECTs alone", async () => {
     poolQuery
       .mockResolvedValueOnce(readyMetadata())
-      .mockResolvedValueOnce(result([{ version: 7 }]));
+      .mockResolvedValueOnce(result([{ version: 8 }]));
     await expect(
       upgrades.requireFamilyApplicationUpgrade(),
     ).resolves.toBeUndefined();
@@ -282,11 +282,14 @@ describe("family application upgrade boundaries", () => {
     process.env.FAMILY_OPENAI_MODELS = " gpt-4o-mini, gpt-5-mini,gpt-4o-mini ";
     const catalog = models.modelCatalog();
     expect(catalog.defaultModel).toBe("gpt-4o-mini");
-    expect(catalog.models.map((model) => model.id)).toEqual([
-      "gpt-4o-mini",
-      "gpt-5-mini",
-    ]);
-    for (const model of catalog.models)
+    expect(
+      catalog.models
+        .filter((model) => model.kind !== "image")
+        .map((model) => model.id),
+    ).toEqual(["gpt-4o-mini", "gpt-5-mini"]);
+    for (const model of catalog.models.filter(
+      (model) => model.kind !== "image",
+    ))
       expect(Object.keys(model).sort()).toEqual([
         "description",
         "id",

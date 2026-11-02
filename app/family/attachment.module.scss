@@ -29,6 +29,65 @@
 .composer .pickButton:hover:not(:disabled) {
   background: var(--hover);
 }
+.compact {
+  display: contents;
+}
+.compact .pickerRow {
+  grid-column: attachment;
+  grid-row: tools;
+  align-self: center;
+}
+.compact .pickerRow small {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.composer.compact .pickButton {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  min-height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: var(--ink);
+  background: transparent;
+  font-size: 24px;
+  line-height: 1;
+  font-weight: 400;
+}
+.compact .draftList,
+.compact > .error {
+  grid-column: 1 / -1;
+  grid-row: attachments;
+  margin: 0 2px 8px;
+}
+.compact .draftList {
+  grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr));
+}
+.compact .draftItem {
+  padding: 7px;
+}
+.compact .draftItem > img {
+  width: 40px;
+  height: 40px;
+}
+.compact > .error {
+  grid-row: errors;
+}
+@media (max-width: 768px), (max-width: 1024px) and (max-height: 500px) {
+  .composer.compact .pickButton {
+    min-width: 44px;
+    min-height: 44px;
+    width: 44px;
+    height: 44px;
+  }
+}
 .draftList,
 .savedList {
   list-style: none;

@@ -1251,9 +1251,9 @@
   box-shadow: none;
 }
 .sidebar {
-  width: 232px;
-  padding: 12px 10px;
-  gap: 7px;
+  width: 224px;
+  padding: 8px;
+  gap: 4px;
   overflow: hidden;
   background: var(--sidebar-bg);
   border-right-color: var(--line);
@@ -1307,8 +1307,8 @@
   text-align: left;
   background: transparent;
   color: var(--ink);
-  padding: 8px 10px;
-  min-height: 38px;
+  padding: 6px 10px;
+  min-height: 34px;
   border: 0;
 }
 .shell .navButton:hover:not(:disabled),
@@ -1350,13 +1350,16 @@
 .chatList button {
   border: 0;
   font-size: 13px;
-  padding: 8px 10px;
-  min-height: 36px;
+  padding: 7px 10px;
+  min-height: 34px;
   border-radius: 7px;
 }
 .chatList button small {
   font-size: 10px;
   opacity: 0.7;
+}
+.chatList button small:not(.chatSnippet) {
+  display: none;
 }
 .shell .activeChat {
   background: var(--hover);
@@ -1413,6 +1416,19 @@
 .account > span {
   padding-inline: 10px;
   font-size: 11px;
+}
+.shell .account > .navLabel {
+  min-height: 32px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.shell .account > .navLabel:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--ink);
 }
 .shell .settingsLauncher {
   display: flex;
@@ -1486,9 +1502,9 @@
   padding-inline: 0;
 }
 .header {
-  min-height: 56px;
-  height: 56px;
-  padding: 8px 20px;
+  min-height: 50px;
+  height: 50px;
+  padding: 6px 18px;
   gap: 10px;
   border-bottom: 0;
 }
@@ -1600,10 +1616,12 @@
   line-height: 1.75;
 }
 .userMessage {
-  margin-left: min(12%, 90px);
+  width: fit-content;
+  max-width: 88%;
+  margin-left: auto;
   background: var(--user-bg);
   border-radius: 16px;
-  padding: 14px 18px;
+  padding: 10px 16px;
   border: 1px solid transparent;
 }
 .messageMeta {
@@ -1652,7 +1670,7 @@
 }
 .emptyHero h2,
 .welcome h2 {
-  font-size: clamp(24px, 3vw, 32px);
+  font-size: clamp(23px, 2.5vw, 29px);
   letter-spacing: -0.03em;
   font-weight: 500;
   line-height: 1.4;
@@ -1703,11 +1721,11 @@
   width: calc(100% - 48px);
   max-width: 800px;
   align-self: center;
-  margin: 0 24px 20px;
+  margin: 0 24px 16px;
   padding: 8px;
   border-radius: 18px;
   background: var(--panel-bg);
-  border-color: var(--line);
+  border-color: var(--composer-line);
   box-shadow: none;
   max-height: 50%;
   overflow-y: auto;
@@ -1719,7 +1737,7 @@
   min-width: 0;
 }
 .composer textarea {
-  min-height: 64px;
+  min-height: 60px;
   max-height: 180px;
   padding: 10px 12px;
   font-size: 15px;
@@ -1743,6 +1761,82 @@
   min-height: 40px;
   background: transparent;
   border: 0;
+}
+.composer > .composerActions {
+  display: grid;
+  grid-template-columns: [attachment] 36px [model] minmax(92px, 1fr) [voice] auto [send] auto;
+  grid-template-rows: [attachments] auto [errors] auto [tools] auto;
+  gap: 0 3px;
+  padding: 0;
+  min-height: 36px;
+}
+.composerActions > .modelPicker {
+  grid-column: model;
+  grid-row: tools;
+  width: min(100%, 230px);
+  max-width: 230px;
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0;
+  margin: 0;
+}
+.composerActions .modelPicker > span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.shell .composerActions .modelPicker select {
+  width: 100%;
+  min-height: 36px;
+  font-size: 12px;
+  padding: 7px 24px 7px 5px;
+  color: var(--ink);
+  text-overflow: ellipsis;
+}
+.composerActions > .voiceTools {
+  grid-column: voice;
+  grid-row: tools;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 1px;
+  padding: 0;
+}
+.composerActions > .composerTrailing {
+  grid-column: send;
+  grid-row: tools;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.shell .composerActions .voiceButton,
+.shell .composerActions .voiceTools .iconButton {
+  padding: 8px;
+  min-width: 36px;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  color: var(--ink);
+}
+.shell .composerActions .voiceButton:hover:not(:disabled) {
+  background: var(--hover);
+}
+.shell .composerActions .voiceRecording {
+  color: var(--danger-text);
+  background: var(--voice-recording-bg);
+}
+.composerModelError {
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--error-text);
 }
 .composerLeading {
   display: flex;
@@ -2034,8 +2128,26 @@
     border: 0;
     background: transparent;
   }
+  .composer > .composerActions {
+    grid-template-columns: [attachment] 44px [model] minmax(56px, 1fr) [voice] auto [send] auto;
+    gap: 0;
+    min-height: 44px;
+  }
+  .shell .composerActions .voiceButton,
+  .shell .composerActions .voiceTools .iconButton {
+    min-width: 44px;
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 12px;
+  }
+  .shell .composerActions .modelPicker select {
+    min-height: 44px;
+    font-size: 16px;
+    padding-inline: 2px;
+  }
   .composerFooter small,
-  .composerActions small {
+  .composerActions > small {
     display: none;
   }
   .shell .sendButton {
@@ -2151,6 +2263,14 @@
 .shell .conversationMenu > summary:hover {
   background: var(--hover);
   color: var(--ink);
+}
+.shell select {
+  color-scheme: inherit;
+}
+.shell select option,
+.shell select optgroup {
+  color: var(--ink);
+  background-color: var(--paper);
 }
 .chatToolbar > .conversationMenu {
   margin-left: auto;
