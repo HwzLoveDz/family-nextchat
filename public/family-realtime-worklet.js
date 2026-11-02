@@ -39,6 +39,9 @@ class FamilyRealtimeCapture extends AudioWorkletProcessor {
         // Drop new batches instead of replaying an unbounded microphone backlog.
         if (!this.inFlight) {
           this.inFlight = true;
+          // Transferring samples.buffer detaches it synchronously. Allocate the
+          // next batch while samples.length still has its original frame count.
+          this.samples = new Float32Array(samples.length);
           this.port.postMessage(
             {
               type: "samples",
@@ -48,7 +51,6 @@ class FamilyRealtimeCapture extends AudioWorkletProcessor {
             },
             [samples.buffer],
           );
-          this.samples = new Float32Array(samples.length);
         }
         this.offset = 0;
       }

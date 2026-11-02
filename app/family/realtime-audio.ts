@@ -111,7 +111,7 @@ export class RealtimeAudioBridge {
         throw new DOMException("Cancelled", "AbortError");
       this.stream = stream;
       await Promise.race([
-        context.audioWorklet.addModule("/family-realtime-worklet.js"),
+        context.audioWorklet.addModule("/family-realtime-worklet.js?v=2"),
         cancelled,
       ]);
       if (this.closed || signal.aborted)

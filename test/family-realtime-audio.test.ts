@@ -134,7 +134,7 @@ test("feature detection never opens a microphone and start unlocks the context i
   expect(mic).toHaveBeenCalledTimes(1);
   await pending;
   expect(Context.instances[0].audioWorklet.addModule).toHaveBeenCalledWith(
-    "/family-realtime-worklet.js",
+    "/family-realtime-worklet.js?v=2",
   );
   audio.setInputEnabled(true);
   Worklet.instances[0].port.onmessage({
