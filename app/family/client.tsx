@@ -3405,7 +3405,9 @@ export function FamilyApp() {
                           className={styles.suggestion}
                           disabled={turnLocked || checking}
                           onClick={() => {
-                            setDraft(text);
+                            setDraft((previous) =>
+                              previous.trim() ? `${previous}\n${text}` : text,
+                            );
                             composerInput.current?.focus();
                           }}
                         >
