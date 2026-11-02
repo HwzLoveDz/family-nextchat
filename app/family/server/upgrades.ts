@@ -2,7 +2,7 @@ import "server-only";
 import { getPool, transaction } from "./db";
 import { FamilyApiError } from "./errors";
 
-export const FAMILY_APPLICATION_SCHEMA_VERSION = 6;
+export const FAMILY_APPLICATION_SCHEMA_VERSION = 7;
 
 /** Application-only, additive upgrade. The caller owns the transaction and schema lock. */
 export const FAMILY_APPLICATION_UPGRADE_SQL = String.raw`
@@ -150,12 +150,29 @@ CREATE TABLE IF NOT EXISTS family_realtime_playback (
   interrupted boolean NOT NULL DEFAULT false,
   PRIMARY KEY(call_id,connection_id,output_item_id)
 );
+CREATE TABLE IF NOT EXISTS family_provider_policy (
+  id integer PRIMARY KEY CHECK(id=1),
+  revision integer NOT NULL CHECK(revision>=0),
+  order_ids jsonb NOT NULL CHECK(jsonb_typeof(order_ids)='array'),
+  disabled_ids jsonb NOT NULL CHECK(jsonb_typeof(disabled_ids)='array'),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by text REFERENCES "user"(id)
+);
+CREATE TABLE IF NOT EXISTS family_provider_observation (
+  provider_id text PRIMARY KEY CHECK(provider_id ~ '^[a-f0-9]{32}$'),
+  balance_state text NOT NULL DEFAULT 'unchecked' CHECK(balance_state IN ('available','permission_denied','unsupported','unavailable','unchecked')),
+  balance_remaining_usd numeric CHECK(balance_remaining_usd IS NULL OR balance_remaining_usd BETWEEN -1000000000000 AND 1000000000000),
+  balance_checked_at timestamptz,
+  refresh_started_at timestamptz,
+  runtime_state text NOT NULL DEFAULT 'unobserved' CHECK(runtime_state IN ('unobserved','accepted','quota_limited')),
+  runtime_observed_at timestamptz
+);
 CREATE TABLE IF NOT EXISTS family_schema_version (
   id integer PRIMARY KEY CHECK (id = 1),
   version integer NOT NULL CHECK (version >= 0),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
-INSERT INTO family_schema_version(id,version) VALUES(1,6)
+INSERT INTO family_schema_version(id,version) VALUES(1,7)
 ON CONFLICT(id) DO UPDATE
   SET version=GREATEST(family_schema_version.version,EXCLUDED.version),updated_at=now();`;
 
@@ -185,7 +202,7 @@ export async function applicationUpgradeStatus(): Promise<{
   const metadata = (
     await pool.query(`SELECT
       to_regclass('family_schema_version') IS NOT NULL AS version_table_exists,
-      (SELECT count(*) = 95 FROM information_schema.columns
+      (SELECT count(*) = 108 FROM information_schema.columns
         WHERE table_schema = current_schema()
           AND (table_name,column_name,data_type,is_nullable) IN (
             ('family_chat','model','text','YES'),
@@ -282,7 +299,20 @@ export async function applicationUpgradeStatus(): Promise<{
             ('family_realtime_playback','output_item_id','text','NO'),
             ('family_realtime_playback','played_ms','integer','NO'),
             ('family_realtime_playback','heard_complete','boolean','NO'),
-            ('family_realtime_playback','interrupted','boolean','NO')
+            ('family_realtime_playback','interrupted','boolean','NO'),
+            ('family_provider_policy','id','integer','NO'),
+            ('family_provider_policy','revision','integer','NO'),
+            ('family_provider_policy','order_ids','jsonb','NO'),
+            ('family_provider_policy','disabled_ids','jsonb','NO'),
+            ('family_provider_policy','updated_at','timestamp with time zone','NO'),
+            ('family_provider_policy','updated_by','text','YES'),
+            ('family_provider_observation','provider_id','text','NO'),
+            ('family_provider_observation','balance_state','text','NO'),
+            ('family_provider_observation','balance_remaining_usd','numeric','YES'),
+            ('family_provider_observation','balance_checked_at','timestamp with time zone','YES'),
+            ('family_provider_observation','refresh_started_at','timestamp with time zone','YES'),
+            ('family_provider_observation','runtime_state','text','NO'),
+            ('family_provider_observation','runtime_observed_at','timestamp with time zone','YES')
           )) AS columns_ready`)
   ).rows[0];
   if (metadata?.version_table_exists !== true)

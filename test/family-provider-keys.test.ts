@@ -4,6 +4,14 @@ import { jest } from "@jest/globals";
 import type { ProviderCredential } from "../app/family/server/provider-keys";
 
 jest.unstable_mockModule("server-only", () => ({}));
+const runtimePolicy = jest.fn(async (keys: ProviderCredential[]) => keys);
+const runtimeObservation = jest.fn(async (..._args: unknown[]) => {});
+jest.unstable_mockModule("@/app/family/server/provider-policy", () => ({
+  resolveRuntimeProviderKeys: runtimePolicy,
+}));
+jest.unstable_mockModule("@/app/family/server/provider-observations", () => ({
+  recordProviderRuntime: runtimeObservation,
+}));
 const { FamilyApiError } = await import("@/app/family/server/errors");
 const {
   configuredProviderKeys,
@@ -13,6 +21,8 @@ const {
   isQuotaExhaustedError,
   rejectExhaustedQuota,
   withProviderKey,
+  effectiveProviderKeys,
+  providerCredentialId,
 } = await import("@/app/family/server/provider-keys");
 
 // These values are synthetic; no inherited credential is read or sent anywhere.
@@ -39,6 +49,10 @@ beforeEach(() => {
   jest.replaceProperty(process, "env", environment);
   global.fetch = noNetwork;
   noNetwork.mockClear();
+  runtimePolicy.mockReset();
+  runtimePolicy.mockImplementation(async (keys: ProviderCredential[]) => keys);
+  runtimeObservation.mockReset();
+  runtimeObservation.mockResolvedValue();
 });
 afterEach(() => {
   global.fetch = initialFetch;
@@ -367,6 +381,88 @@ describe("bounded HTTP rejection inspection", () => {
 });
 
 describe("one attempt per credential, with quota-only failover", () => {
+  test("a new request applies persisted order and disabled selection before its first attempt", async () => {
+    configure();
+    runtimePolicy.mockImplementation(async (keys) => [keys[1]]);
+    const attempt = jest.fn(async (key: ProviderCredential) => key.name);
+    await expect(withProviderKey(attempt, signal())).resolves.toBe("优先乙");
+    expect(attempt).toHaveBeenCalledTimes(1);
+    expect(runtimeObservation).toHaveBeenCalledWith(
+      providerCredentialId(priority[1] as ProviderCredential),
+      "accepted",
+      expect.any(Date),
+    );
+  });
+
+  test("policy read failures fail closed without contacting a provider", async () => {
+    configure();
+    runtimePolicy.mockRejectedValue(
+      new FamilyApiError(503, "policy unavailable"),
+    );
+    const attempt = jest.fn(async () => "forbidden");
+    await expect(withProviderKey(attempt, signal())).rejects.toMatchObject({
+      status: 503,
+    });
+    expect(attempt).not.toHaveBeenCalled();
+  });
+
+  test("an observation failure after paid acceptance cannot start another credential attempt", async () => {
+    configure();
+    runtimeObservation.mockRejectedValue(
+      new Error("synthetic storage failure"),
+    );
+    const attempt = jest.fn(async (key: ProviderCredential) => key.name);
+    await expect(withProviderKey(attempt, signal())).resolves.toBe("优先甲");
+    expect(attempt).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([401, 403, 429, 500, 503])(
+    "resolved HTTP %p is neither accepted evidence nor a reason to replay through another credential",
+    async (status) => {
+      configure();
+      const rejected = new Response("synthetic rejection", { status });
+      const attempt = jest.fn(async () => rejected);
+      await expect(withProviderKey(attempt, signal())).resolves.toBe(rejected);
+      expect(attempt).toHaveBeenCalledTimes(1);
+      expect(runtimeObservation).not.toHaveBeenCalled();
+    },
+  );
+
+  test("a successful HTTP response is accepted evidence while its body remains unread", async () => {
+    configure();
+    const accepted = new Response("synthetic stream", { status: 200 });
+    await expect(withProviderKey(async () => accepted, signal())).resolves.toBe(
+      accepted,
+    );
+    expect(accepted.bodyUsed).toBe(false);
+    expect(runtimeObservation).toHaveBeenCalledWith(
+      providerCredentialId({ ...priority[0], tier: "priority" }),
+      "accepted",
+      expect.any(Date),
+    );
+  });
+
+  test("quota status observation failures do not suppress the intended quota-only failover", async () => {
+    configure();
+    runtimeObservation.mockRejectedValue(
+      new Error("synthetic storage failure"),
+    );
+    const attempt = jest.fn(async (key: ProviderCredential) => {
+      if (key.key === priority[0].key) throw new ProviderQuotaExhaustedError();
+      return "accepted";
+    });
+    await expect(withProviderKey(attempt, signal())).resolves.toBe("accepted");
+    expect(attempt).toHaveBeenCalledTimes(2);
+    expect(runtimeObservation.mock.calls.map(([, state]) => state)).toEqual([
+      "quota_limited",
+      "accepted",
+    ]);
+  });
+
+  test("effective empty configuration preserves the unconfigured result without a DB policy read", async () => {
+    await expect(effectiveProviderKeys()).resolves.toEqual([]);
+    expect(runtimePolicy).not.toHaveBeenCalled();
+  });
   test("tries ordered priorities and stops at the first success", async () => {
     configure();
     const attempt = jest.fn(async (credential: ProviderCredential) => {

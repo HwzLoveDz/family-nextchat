@@ -3,6 +3,7 @@ import { jest } from "@jest/globals";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
 import type { RealtimeContext } from "../app/family/server/realtime-ledger";
+import type { ProviderCredential } from "../app/family/server/provider-keys";
 
 class FixtureSocket extends EventEmitter {
   static instances: FixtureSocket[] = [];
@@ -60,6 +61,14 @@ const markInterrupted = jest.fn(async (..._args: any[]) => {});
 const markPlayed = jest.fn(async (..._args: any[]) => {});
 const release = jest.fn(async (..._args: any[]) => {});
 jest.unstable_mockModule("server-only", () => ({}));
+// Routing persistence has separate database tests. Keep these protocol tests
+// on synthetic credentials while exercising the real quota-only failover code.
+jest.unstable_mockModule("@/app/family/server/provider-policy", () => ({
+  resolveRuntimeProviderKeys: async (keys: ProviderCredential[]) => keys,
+}));
+jest.unstable_mockModule("@/app/family/server/provider-observations", () => ({
+  recordProviderRuntime: async () => {},
+}));
 jest.unstable_mockModule("ws", () => ({ default: FixtureSocket }));
 jest.unstable_mockModule("@vercel/functions", () => ({
   getDeadline: () => runtimeDeadline,

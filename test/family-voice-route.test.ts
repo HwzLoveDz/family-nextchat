@@ -1,6 +1,7 @@
 /** @jest-environment node */
 import { jest } from "@jest/globals";
 import type { FamilyUsage } from "@/app/family/types";
+import type { ProviderCredential } from "../app/family/server/provider-keys";
 
 type Evidence = {
   usage: FamilyUsage;
@@ -43,6 +44,12 @@ const unknown = (): FamilyUsage => ({
   outputTokens: null,
 });
 jest.unstable_mockModule("server-only", () => ({}));
+jest.unstable_mockModule("@/app/family/server/provider-policy", () => ({
+  resolveRuntimeProviderKeys: async (keys: ProviderCredential[]) => keys,
+}));
+jest.unstable_mockModule("@/app/family/server/provider-observations", () => ({
+  recordProviderRuntime: async () => {},
+}));
 jest.unstable_mockModule("@/app/family/server/auth", () => ({ requireUser }));
 jest.unstable_mockModule("@/app/family/server/accounts", () => ({ rateLimit }));
 jest.unstable_mockModule("@/app/family/server/upgrades", () => ({

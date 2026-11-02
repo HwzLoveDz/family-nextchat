@@ -84,6 +84,14 @@ beforeEach(() => {
   });
   query.mockImplementation(async (sql, values = []) => {
     if (
+      sql.startsWith(
+        "SELECT revision,order_ids,disabled_ids,updated_at FROM family_provider_policy",
+      )
+    )
+      return result();
+    if (sql.startsWith("INSERT INTO family_provider_observation"))
+      return result();
+    if (
       ["BEGIN", "COMMIT", "ROLLBACK"].includes(sql) ||
       sql.startsWith("SELECT pg_advisory_xact_lock")
     )

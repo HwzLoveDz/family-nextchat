@@ -12,6 +12,13 @@ const generate = jest.fn(
   async (..._args: unknown[]) => new Response("fixture response"),
 );
 jest.unstable_mockModule("server-only", () => ({}));
+jest.unstable_mockModule("@/app/family/server/provider-policy", () => ({
+  getProviderPolicyState: async () => ({
+    revision: 0,
+    updatedAt: null,
+    keys: [],
+  }),
+}));
 jest.unstable_mockModule("@/app/family/server/auth", () => ({
   requireUser: auth,
 }));

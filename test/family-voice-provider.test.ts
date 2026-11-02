@@ -2,6 +2,7 @@
 import { jest } from "@jest/globals";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
+import type { ProviderCredential } from "../app/family/server/provider-keys";
 
 class FixtureSocket extends EventEmitter {
   static instances: FixtureSocket[] = [];
@@ -20,6 +21,12 @@ class FixtureSocket extends EventEmitter {
   }
 }
 jest.unstable_mockModule("server-only", () => ({}));
+jest.unstable_mockModule("@/app/family/server/provider-policy", () => ({
+  resolveRuntimeProviderKeys: async (keys: ProviderCredential[]) => keys,
+}));
+jest.unstable_mockModule("@/app/family/server/provider-observations", () => ({
+  recordProviderRuntime: async () => {},
+}));
 jest.unstable_mockModule("ws", () => ({ default: FixtureSocket }));
 const media = await import("@/app/family/server/voice-media");
 const provider = await import("@/app/family/server/voice-provider");
@@ -514,6 +521,13 @@ describe("current provider request boundaries and WebSocket cleanup", () => {
 });
 
 describe("voice credential fallback is restricted to explicit unstarted quota rejection", () => {
+  async function preparedSocket() {
+    // Policy is read before constructing an upstream socket. Drain that async
+    // preparation without advancing the operation's deadline or audio clock.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(FixtureSocket.instances).toHaveLength(1);
+    return FixtureSocket.instances[0];
+  }
   const handshake = (
     statusCode: number,
     code: string,
@@ -674,7 +688,7 @@ describe("voice credential fallback is restricted to explicit unstarted quota re
       ({ key }) => provider.requestSpeech(key, "合成朗读", signal, evidence),
       signal,
     );
-    const first = FixtureSocket.instances[0];
+    const first = await preparedSocket();
     first.emit("unexpected-response", {}, response);
     await expect(pending).resolves.toHaveLength(48);
     expect(oldCleanedBeforeNext).toBe(true);
@@ -718,7 +732,7 @@ describe("voice credential fallback is restricted to explicit unstarted quota re
     const rejected = expect(pending).rejects.toMatchObject({
       code: "VOICE_PROVIDER_ERROR",
     });
-    FixtureSocket.instances[0].emit(
+    (await preparedSocket()).emit(
       "unexpected-response",
       {},
       handshake(status, code),
@@ -744,7 +758,7 @@ describe("voice credential fallback is restricted to explicit unstarted quota re
       const rejected = expect(pending).rejects.toMatchObject({
         code: "VOICE_PROVIDER_ERROR",
       });
-      const socket = FixtureSocket.instances[0];
+      const socket = await preparedSocket();
       socket.emit("open");
       if (mode === "provider-event")
         frame(socket, {
@@ -782,7 +796,7 @@ describe("voice credential fallback is restricted to explicit unstarted quota re
     const response = Object.assign(new Readable({ read() {} }), {
       statusCode: 429,
     });
-    FixtureSocket.instances[0].emit("unexpected-response", {}, response);
+    (await preparedSocket()).emit("unexpected-response", {}, response);
     controller.abort();
     await rejected;
     expect(response.destroyed).toBe(true);

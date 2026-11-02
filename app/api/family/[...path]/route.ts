@@ -24,7 +24,7 @@ import {
 } from "@/app/family/server/chats";
 import { listWorkspaceFiles } from "@/app/family/server/workspace-files";
 import { modelCatalog } from "@/app/family/server/models";
-import { providerKeySummary } from "@/app/family/server/provider-keys";
+import { getProviderPolicyState } from "@/app/family/server/provider-policy";
 import {
   ATTACHMENT_REQUEST_LIMIT,
   readAttachment,
@@ -242,7 +242,9 @@ async function handle(
         return finish(
           json({
             users: await listUsers(),
-            providerKeys: providerKeySummary(),
+            providerKeys: (await getProviderPolicyState()).keys
+              .filter((key) => key.enabled)
+              .map(({ name, tier }) => ({ name, tier })),
           }),
         );
       }

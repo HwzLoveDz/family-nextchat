@@ -1,4 +1,5 @@
 import "server-only";
+import { createHash } from "node:crypto";
 import { FamilyApiError } from "./errors";
 
 export type ProviderCredential = {
@@ -6,6 +7,18 @@ export type ProviderCredential = {
   key: string;
   tier: "priority" | "fallback";
 };
+
+/** Stable opaque identity. Never expose any prefix or suffix of a credential. */
+export function providerCredentialId(credential: ProviderCredential): string {
+  return createHash("sha256").update(credential.key).digest("hex").slice(0, 32);
+}
+
+export async function effectiveProviderKeys(): Promise<ProviderCredential[]> {
+  const credentials = configuredProviderKeys();
+  if (!credentials.length) return [];
+  const { resolveRuntimeProviderKeys } = await import("./provider-policy");
+  return resolveRuntimeProviderKeys(credentials);
+}
 
 const MAX_PRIORITY_KEYS = 8;
 const MAX_CONFIG_BYTES = 65_536;
@@ -226,7 +239,7 @@ export async function withProviderKey<T>(
   signal: AbortSignal,
 ): Promise<T> {
   assertNotAborted(signal);
-  const credentials = configuredProviderKeys();
+  const credentials = await effectiveProviderKeys();
   if (!credentials.length)
     throw new FamilyApiError(
       503,
@@ -235,14 +248,41 @@ export async function withProviderKey<T>(
     );
   for (const credential of credentials) {
     assertNotAborted(signal);
+    let result: T;
     try {
-      const result = await attempt(credential);
-      assertNotAborted(signal);
-      return result;
+      result = await attempt(credential);
     } catch (failure) {
       assertNotAborted(signal);
       if (!(failure instanceof ProviderQuotaExhaustedError)) throw failure;
+      await observeRuntime(credential, "quota_limited");
+      assertNotAborted(signal);
+      continue;
     }
+    assertNotAborted(signal);
+    // Telemetry cannot turn an accepted paid attempt into another attempt.
+    // Chat attempts return the upstream Response before the caller handles
+    // non-quota failures. A resolved fetch alone is not successful acceptance.
+    if (!(result instanceof Response) || result.ok)
+      await observeRuntime(credential, "accepted");
+    assertNotAborted(signal);
+    return result;
   }
   throw new ProviderQuotaExhaustedError();
+}
+
+async function observeRuntime(
+  credential: ProviderCredential,
+  state: "accepted" | "quota_limited",
+): Promise<void> {
+  try {
+    const { recordProviderRuntime } = await import("./provider-observations");
+    await recordProviderRuntime(
+      providerCredentialId(credential),
+      state,
+      new Date(),
+    );
+  } catch {
+    // Best-effort, awaited and bounded by the DB pool. No credential or raw
+    // error is logged, and a failed observation never masks the paid result.
+  }
 }

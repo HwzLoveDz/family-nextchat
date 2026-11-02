@@ -11,6 +11,8 @@ import {
 import { FamilyMarkdown } from "./message-markdown";
 import { FamilySettings } from "./family-settings";
 import { FamilyIcon } from "./icons";
+import { ProviderAdminPanel } from "./provider-admin-panel";
+import type { ProviderAdminSnapshot } from "./provider-admin-types";
 import { useWorkspacePreferences } from "./use-workspace-preferences";
 import type {
   FamilyFilePage,
@@ -27,7 +29,6 @@ import {
   type FamilyMessageRequest,
   type FamilyModel,
   type FamilyModelCatalog,
-  type FamilyProviderKeyInfo,
   type FamilySiteStatus,
   type FamilyStreamEvent,
   type FamilyUsage,
@@ -350,7 +351,6 @@ export function FamilyApp() {
   const [archiveConfirm, setArchiveConfirm] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [adminUsers, setAdminUsers] = useState<FamilyAdminUser[]>([]);
-  const [providerKeys, setProviderKeys] = useState<FamilyProviderKeyInfo[]>([]);
   const [adminSelectedUser, setAdminSelectedUser] =
     useState<FamilyAdminUser | null>(null);
   const [adminChats, setAdminChats] = useState<FamilyChat[]>([]);
@@ -595,7 +595,6 @@ export function FamilyApp() {
     setWorking(false);
     setSidebarOpen(false);
     setAdminUsers([]);
-    setProviderKeys([]);
     setAdminSelectedUser(null);
     setAdminChats([]);
     setAdminDetail(null);
@@ -1622,10 +1621,8 @@ export function FamilyApp() {
     voiceReset.current();
     const data = await request<{
       users: FamilyAdminUser[];
-      providerKeys?: FamilyProviderKeyInfo[];
     }>("/api/family/admin/users");
     setAdminUsers(data.users);
-    setProviderKeys(data.providerKeys ?? []);
     setArchiveConfirm(false);
     setScreen("admin");
     setSidebarOpen(false);
@@ -1723,10 +1720,11 @@ export function FamilyApp() {
   const workspaceRequest = async <T,>(
     path: string,
     init: RequestInit = {},
+    timeoutMs = 15000,
   ): Promise<T> => {
     if (!identityVerified.current) throw new Error("请等待登录状态确认。");
     try {
-      return await request<T>(path, init);
+      return await request<T>(path, init, timeoutMs);
     } catch (failure) {
       if (
         failure instanceof RequestError &&
@@ -2975,26 +2973,40 @@ export function FamilyApp() {
           ) : null}
           {screen === "admin" ? (
             <div className={styles.adminContent}>
-              {providerKeys.length ? (
-                <section
-                  className={styles.inviteGuide}
-                  aria-label="API 使用顺序"
-                >
-                  <h2>API 使用顺序</h2>
-                  <p>
-                    {providerKeys
-                      .map(
-                        (key) =>
-                          `${key.name}${
-                            key.tier === "fallback" ? "（备用）" : ""
-                          }`,
-                      )
-                      .join(" → ")}
-                  </p>
-                  <small>
-                    按此顺序使用；当前一项额度耗尽时自动切换。这里只显示配置顺序，不代表实时剩余额度。
-                  </small>
-                </section>
+              {user.role === "admin" ? (
+                <ProviderAdminPanel
+                  scopeKey={`${attachmentEpoch}:${attachmentOwner}:admin`}
+                  locked={checking || working || !identityVerified.current}
+                  isCurrent={() =>
+                    attachmentEpoch === epoch.current &&
+                    attachmentOwner === currentUser.current?.id &&
+                    currentUser.current?.role === "admin" &&
+                    identityVerified.current
+                  }
+                  onLoad={() =>
+                    workspaceRequest<ProviderAdminSnapshot>(
+                      "/api/family/admin/providers/refresh",
+                      {
+                        method: "POST",
+                        body: JSON.stringify({ force: false }),
+                      },
+                      30000,
+                    )
+                  }
+                  onRefresh={() =>
+                    workspaceRequest<ProviderAdminSnapshot>(
+                      "/api/family/admin/providers/refresh",
+                      { method: "POST", body: JSON.stringify({ force: true }) },
+                      30000,
+                    )
+                  }
+                  onSave={(input) =>
+                    workspaceRequest<ProviderAdminSnapshot>(
+                      "/api/family/admin/providers",
+                      { method: "PATCH", body: JSON.stringify(input) },
+                    )
+                  }
+                />
               ) : null}
               <section className={styles.inviteGuide}>
                 <h2>邀请家人</h2>

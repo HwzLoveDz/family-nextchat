@@ -11,6 +11,10 @@ import {
 } from "@testing-library/react";
 import { FamilyApp } from "../app/family/client";
 import type { FamilyChatDetail, FamilyUser } from "../app/family/types";
+import type {
+  ProviderAdminSnapshot,
+  ProviderPolicyInput,
+} from "../app/family/provider-admin-types";
 import { FAMILY_NOTICE } from "../app/family/types";
 import { FAMILY_SESSION_EVENT } from "../app/family/client-cleanup";
 import { ReadableStream as NodeReadableStream } from "node:stream/web";
@@ -45,6 +49,26 @@ function json(value: unknown, status = 200): Response {
     status,
     json: async () => value,
   } as Response;
+}
+function providerSnapshot(): ProviderAdminSnapshot {
+  return {
+    revision: 0,
+    updatedAt: null,
+    providers: ["志颖", "子哲"].map((name, order) => ({
+      id: String(order + 1).repeat(32),
+      name,
+      order,
+      enabled: true,
+      tier: "priority",
+      balance: {
+        state: "permission_denied",
+        remainingUSD: null,
+        checkedAt: "2026-11-03T00:00:00Z",
+        scope: "organization",
+      },
+      activity: { state: "unobserved", checkedAt: null },
+    })),
+  };
 }
 function detail(content: string): FamilyChatDetail {
   return {
@@ -124,7 +148,7 @@ describe("family client account isolation", () => {
     localStorage.clear();
     identityClockOffset = 0;
     identity = memberA;
-    requestHandler = async (path) => {
+    requestHandler = async (path, init) => {
       if (path === "/api/family/status")
         return json({
           ready: true,
@@ -139,6 +163,13 @@ describe("family client account isolation", () => {
       if (path === "/api/family/chats")
         return json({ chats: [chat(identity?.id === memberB.id ? "b" : "a")] });
       if (path === "/api/family/activity") return json({ ok: true });
+      if (
+        path === "/api/family/admin/providers/refresh" &&
+        init?.method === "POST"
+      )
+        return identity?.role === "admin"
+          ? json(providerSnapshot())
+          : json({ error: "需要管理员权限" }, 403);
       if (path === "/api/family/models")
         return json({
           models: [
@@ -1093,12 +1124,22 @@ describe("family client account isolation", () => {
     expect(within(account!).getByText("969 / 979")).toBeInTheDocument();
     expect(within(account!).getByText("3")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "刷新统计" })).toBeEnabled();
+    const providerPanel = screen.getByRole("region", {
+      name: "API 额度与使用顺序",
+    });
     expect(
-      screen.getByRole("region", { name: "API 使用顺序" }),
-    ).toHaveTextContent("志颖 → 子哲");
+      await within(providerPanel).findByRole("checkbox", { name: "启用 志颖" }),
+    ).toBeChecked();
     expect(
-      screen.getByRole("region", { name: "API 使用顺序" }),
-    ).not.toHaveTextContent("备用");
+      within(providerPanel).getByRole("checkbox", { name: "启用 子哲" }),
+    ).toBeChecked();
+    expect(within(providerPanel).getAllByRole("listitem")).toHaveLength(2);
+    expect(within(providerPanel).getAllByText("未授权查询")).toHaveLength(2);
+    expect(providerPanel).not.toHaveTextContent("备用");
+    expect(providerPanel).not.toHaveTextContent("sk-");
+    expect(providerPanel).not.toHaveTextContent(
+      "11111111111111111111111111111111",
+    );
     expect(
       within(account!).getByRole("button", { name: "查看完整聊天" }),
     ).toBeEnabled();
@@ -1114,6 +1155,99 @@ describe("family client account isolation", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("已归档")).toBeInTheDocument();
     expectMonitoringCopyAbsent();
+  });
+
+  test("only an administrator opens provider controls and explicitly saves the edited priority", async () => {
+    const memberView = render(<FamilyApp />);
+    await screen.findByRole("textbox", { name: "发送消息" });
+    expect(
+      screen.queryByRole("region", { name: "API 额度与使用顺序" }),
+    ).not.toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([path]) => path.includes("/admin/providers")),
+    ).toBe(false);
+    memberView.unmount();
+
+    identity = { ...memberA, role: "admin" };
+    let providerState = providerSnapshot();
+    const writes: ProviderPolicyInput[] = [];
+    const baseHandler = requestHandler;
+    requestHandler = async (path, init) => {
+      if (path === "/api/family/admin/users") return json({ users: [] });
+      if (path === "/api/family/admin/providers/refresh") {
+        expect(init?.method).toBe("POST");
+        expect(JSON.parse(String(init?.body))).toEqual({ force: false });
+        return json(providerState);
+      }
+      if (path === "/api/family/admin/providers" && init?.method === "PATCH") {
+        const input = JSON.parse(String(init.body)) as ProviderPolicyInput;
+        writes.push(input);
+        providerState = {
+          ...providerState,
+          revision: providerState.revision + 1,
+          providers: input.order.map((id, order) => ({
+            ...providerState.providers.find((item) => item.id === id)!,
+            order,
+            enabled: !input.disabled.includes(id),
+          })),
+        };
+        return json(providerState);
+      }
+      return baseHandler(path, init);
+    };
+    render(<FamilyApp />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "账户与用量管理" }),
+    );
+    const providerPanel = await screen.findByRole("region", {
+      name: "API 额度与使用顺序",
+    });
+    await within(providerPanel).findByRole("checkbox", { name: "启用 志颖" });
+    await waitFor(() =>
+      expect(
+        within(providerPanel).getByRole("button", { name: "上移 子哲" }),
+      ).toBeEnabled(),
+    );
+    fireEvent.click(
+      within(providerPanel).getByRole("button", { name: "上移 子哲" }),
+    );
+    fireEvent.click(
+      within(providerPanel).getByRole("checkbox", { name: "启用 志颖" }),
+    );
+    expect(writes).toHaveLength(0);
+    fireEvent.click(
+      within(providerPanel).getByRole("button", { name: "保存使用顺序" }),
+    );
+    await waitFor(() =>
+      expect(writes).toEqual([
+        {
+          order: ["2".repeat(32), "1".repeat(32)],
+          disabled: ["1".repeat(32)],
+          expectedRevision: 0,
+        },
+      ]),
+    );
+    expect(
+      await within(providerPanel).findByText(/使用顺序已保存/),
+    ).toBeInTheDocument();
+    expect(
+      within(providerPanel).getByRole("checkbox", { name: "启用 志颖" }),
+    ).not.toBeChecked();
+    expect(
+      within(providerPanel).getByRole("checkbox", { name: "启用 子哲" }),
+    ).toBeChecked();
+
+    identity = memberB;
+    advanceIdentityCooldown();
+    fireEvent.focus(window);
+    await screen.findByText(memberB.name);
+    expect(
+      screen.queryByRole("region", { name: "API 额度与使用顺序" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "保存使用顺序" }),
+    ).not.toBeInTheDocument();
+    expect(writes).toHaveLength(1);
   });
 
   test("a profile role downgrade clears privileged details, draft and File selections before revalidation", async () => {

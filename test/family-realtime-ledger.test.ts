@@ -741,8 +741,8 @@ test.each(["model", "title", "archive"])(
     ).toBe(false);
   },
 );
-test("v6 is additive and validates every realtime column through SELECT-only readiness", async () => {
-  expect(upgrades.FAMILY_APPLICATION_SCHEMA_VERSION).toBe(6);
+test("v7 is additive and validates every realtime column through SELECT-only readiness", async () => {
+  expect(upgrades.FAMILY_APPLICATION_SCHEMA_VERSION).toBe(7);
   expect(upgrades.FAMILY_APPLICATION_UPGRADE_SQL).not.toMatch(
     /\b(?:DROP|DELETE|TRUNCATE)\b|ALTER TABLE "?(?:user|session|account)"?\b/i,
   );
@@ -750,12 +750,12 @@ test("v6 is additive and validates every realtime column through SELECT-only rea
     .mockResolvedValueOnce(
       result([{ version_table_exists: true, columns_ready: false }]),
     )
-    .mockResolvedValueOnce(result([{ version: 6 }]));
+    .mockResolvedValueOnce(result([{ version: 7 }]));
   await expect(
     upgrades.requireFamilyApplicationUpgrade(),
   ).rejects.toMatchObject({ code: "APPLICATION_UPGRADE_REQUIRED" });
   const sql = poolQuery.mock.calls[0][0];
-  expect(sql).toContain("count(*) = 95");
+  expect(sql).toContain("count(*) = 108");
   expect(sql).toContain(
     "('family_chat','pinned_at','timestamp with time zone','YES')",
   );
