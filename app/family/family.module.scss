@@ -1441,7 +1441,7 @@
   gap: 10px;
   text-align: left;
 }
-.shell .settingsLauncher:hover {
+.shell .settingsLauncher:hover:not(:disabled) {
   background: var(--hover);
 }
 .settingsLauncher > div {
@@ -1710,7 +1710,7 @@
   border-radius: 12px;
   font-size: 12px;
 }
-.shell .suggestion:hover {
+.shell .suggestion:hover:not(:disabled) {
   background: var(--hover);
 }
 .suggestion small {
