@@ -318,6 +318,18 @@ describe("family application upgrade boundaries", () => {
     );
   });
 
+  test("a retired model in an older env allowlist is hidden and cannot be requested", () => {
+    process.env.FAMILY_OPENAI_MODELS = "gpt-4o-mini,gpt-4.1-nano";
+    expect(models.modelCatalog().models.map((model) => model.id)).not.toContain("gpt-4.1-nano");
+    expect(() => models.allowedModel("gpt-4.1-nano")).toThrow(
+      expect.objectContaining({ status: 400, code: "MODEL_NOT_ALLOWED" }),
+    );
+    process.env.FAMILY_OPENAI_MODEL = "gpt-4.1-nano";
+    expect(() => models.modelCatalog()).toThrow(
+      expect.objectContaining({ status: 503, code: "MODEL_CATALOG_MISCONFIGURED" }),
+    );
+  });
+
   test.each([
     "gpt-4o",
     "https://collector.test.invalid/v1/chat/completions",

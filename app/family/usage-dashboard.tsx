@@ -35,12 +35,14 @@ const colors = [
 ];
 const number = (value: number) => new Intl.NumberFormat("zh-CN").format(value);
 const usd = (value: number) =>
-  new Intl.NumberFormat("zh-CN", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 8,
-  }).format(value);
+  value > 0 && value < 0.0001
+    ? "<$0.0001"
+    : new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: "USD",
+        minimumFractionDigits: value > 0 && value < 1 ? 4 : 2,
+        maximumFractionDigits: 4,
+      }).format(value);
 const measure = (item: UsageDashboardCounters, metric: Metric) =>
   metric === "tokens"
     ? item.totalTokens
@@ -51,7 +53,7 @@ const measureText = (value: number, metric: Metric) =>
   metric === "cost" ? usd(value) : number(value);
 const metricLabel = (metric: Metric) =>
   metric === "tokens"
-    ? "已报告 Token"
+    ? "Token"
     : metric === "requests"
     ? "请求记录"
     : "费用（USD）";
@@ -191,11 +193,6 @@ function UsageDashboardSession(props: UsageDashboardProps) {
       <div className={styles.heading}>
         <div>
           <h2>{title}</h2>
-          <p>
-            {props.admin
-              ? "查看每位成员的实际用量记录。"
-              : "只展示当前账户的用量记录。"}
-          </p>
         </div>
         <button
           className={styles.quiet}
@@ -250,7 +247,6 @@ function UsageDashboardSession(props: UsageDashboardProps) {
             </select>
           </label>
         ) : null}
-        <small>按北京时间自然日统计</small>
       </div>
       {error ? (
         <p role="alert" className={styles.error}>
@@ -267,14 +263,13 @@ function UsageDashboardSession(props: UsageDashboardProps) {
             <div>
               <span>Token 总量</span>
               <strong>{number(matching.summary.totalTokens)}</strong>
-              <small>仅上游已报告的用量</small>
             </div>
             <div>
               <span>总费用 · USD</span>
-              <strong>
+              <strong className={styles.money}>
                 {cost?.estimatedUSD !== undefined && cost.estimatedUSD !== null
                   ? usd(cost.estimatedUSD)
-                  : "暂无法估算"}
+                  : "—"}
               </strong>
               <small>
                 {cost
@@ -287,17 +282,14 @@ function UsageDashboardSession(props: UsageDashboardProps) {
             <div>
               <span>输入 Token</span>
               <strong>{number(matching.summary.inputTokens)}</strong>
-              <small>包含已报告的对应模态输入</small>
             </div>
             <div>
               <span>输出 Token</span>
               <strong>{number(matching.summary.outputTokens)}</strong>
-              <small>包含已报告的对应模态输出</small>
             </div>
             <div>
               <span>请求记录</span>
               <strong>{number(matching.summary.requests)}</strong>
-              <small>含文字、图片和语音操作</small>
             </div>
             <div>
               <span>未知用量记录</span>
@@ -456,9 +448,7 @@ function UsageDashboardSession(props: UsageDashboardProps) {
                   role="img"
                   aria-label={`模型${metricLabel(metric)}占比`}
                 >
-                  <title>{`按${metricLabel(
-                    metric,
-                  )}统计；未知用量不计入Token或金额`}</title>
+                  <title>{`模型${metricLabel(metric)}分布`}</title>
                   <circle
                     cx={115}
                     cy={115}
@@ -523,7 +513,7 @@ function UsageDashboardSession(props: UsageDashboardProps) {
               {!total ? (
                 <p className={styles.help}>
                   {metric === "tokens"
-                    ? "本期暂无已报告 Token，可切换请求记录查看。"
+                    ? "本期暂无 Token 记录。"
                     : metric === "cost"
                     ? "本期暂无费用记录。"
                     : "本期暂无请求记录。"}
@@ -544,16 +534,7 @@ function UsageDashboardSession(props: UsageDashboardProps) {
                       <i
                         style={{ background: colors[index % colors.length] }}
                       />
-                      <span>
-                        {model.label}
-                        <small>
-                          {model.source === "reported"
-                            ? "上游报告模型"
-                            : model.source === "requested"
-                            ? "请求模型，未报告实际模型"
-                            : "其他模型合并"}
-                        </small>
-                      </span>
+                      <span>{model.label}</span>
                       <b>
                         {measureText(measure(model, metric), metric)}
                         <small>

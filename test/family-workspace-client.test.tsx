@@ -190,6 +190,33 @@ const menu = () => {
   fireEvent.click(screen.getByLabelText("对话操作"));
 };
 
+test.each(["我的文件", "我的用量"])(
+  "%s can return to a new unsaved conversation with the same draft and file input",
+  async (destination) => {
+    const base = handler;
+    handler = async (path, init) =>
+      path === "/api/family/usage?days=all"
+        ? json({ error: "合成用量暂不可用" }, 503)
+        : base(path, init);
+    const view = render(<FamilyApp />);
+    const composer = await screen.findByRole("textbox", { name: "发送消息" });
+    await waitFor(() => expect(composer).toBeEnabled());
+    fireEvent.change(composer, { target: { value: "尚未创建会话的草稿" } });
+    const input = view.container.querySelector('input[type="file"]')!;
+    fireEvent.change(input, {
+      target: { files: [new File(["keep"], "draft-keep.txt", { type: "text/plain" })] },
+    });
+    await screen.findByText("draft-keep.txt");
+    fireEvent.click(screen.getByRole("button", { name: destination, exact: true }));
+    fireEvent.click(await screen.findByRole("button", { name: "返回聊天", exact: true }));
+    expect(screen.getByRole("textbox", { name: "发送消息" })).toBe(composer);
+    expect(composer).toHaveValue("尚未创建会话的草稿");
+    expect(view.container.querySelector('input[type="file"]')).toBe(input);
+    expect(screen.getByText("draft-keep.txt")).toBeInTheDocument();
+    expect(paidCalls()).toHaveLength(0);
+  },
+);
+
 test("server full-text matches are displayed even when the title does not match; stale query cannot replace them", async () => {
   const old = deferred();
   const base = handler;

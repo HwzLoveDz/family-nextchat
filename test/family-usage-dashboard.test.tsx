@@ -126,12 +126,14 @@ test("self page shows total tokens, dollars, trend/modelcharts without other mem
     screen.queryByRole("region", { name: "成员用量比较" }),
   ).not.toBeInTheDocument();
   expect(container.textContent).not.toContain("家人乙");
-  expect(container.textContent).not.toMatch(/免责声明|与上游账单可能有差异/);
+  expect(container.textContent).not.toMatch(
+    /免责声明|与上游账单可能有差异|仅上游已报告|对应模态|含文字、图片和语音|上游报告模型|未报告实际模型|自然日统计|只展示当前账户/,
+  );
   expect(
-    screen.getByRole("img", { name: /模型已报告 Token占比/ }),
+    screen.getByRole("img", { name: /模型Token占比/ }),
   ).toBeInTheDocument();
   expect(
-    screen.getByRole("img", { name: /最近90天已报告 Token趋势/ }),
+    screen.getByRole("img", { name: /最近90天Token趋势/ }),
   ).toBeInTheDocument();
   expect(p.onLoad).toHaveBeenCalledWith("all", undefined);
 });
@@ -186,12 +188,32 @@ test("unknown use is a separate count, unpriced dollars do not become zero", asy
   value.models = [{ ...value.models[0], ...value.summary }];
   const p = { ...props(), onLoad: jest.fn(async () => value) };
   render(<UsageDashboard {...p} />);
-  expect(await screen.findByText("暂无法估算")).toBeInTheDocument();
-  expect(screen.getByText("0 条已计价 · 3 条未计价")).toBeInTheDocument();
   expect(
-    screen.getByText("本期暂无已报告 Token，可切换请求记录查看。"),
+    await screen.findByText("0 条已计价 · 3 条未计价"),
   ).toBeInTheDocument();
+  const costCard = screen.getByText("总费用 · USD").parentElement;
+  expect(costCard?.querySelector("strong")).toHaveTextContent("—");
+  expect(costCard?.querySelector("strong")).not.toHaveTextContent(/US\$0/);
+  expect(screen.getByText("本期暂无 Token 记录。")).toBeInTheDocument();
 });
+test.each([
+  [0.17401035, "$0.1740"],
+  [0.000009, "<$0.0001"],
+  [12.345678, "$12.3457"],
+  [0, "$0.00"],
+])("compact money %s preserves the API amount", async (amount, display) => {
+  const value = data();
+  value.summary.cost!.estimatedUSD = amount as number;
+  const p = { ...props(), onLoad: jest.fn(async () => value) };
+  render(<UsageDashboard {...p} />);
+  await screen.findByText("总费用 · USD");
+  const costCard = screen.getByText("总费用 · USD").parentElement;
+  expect(costCard?.querySelector("strong")).toHaveTextContent(
+    display as string,
+  );
+  expect(value.summary.cost!.estimatedUSD).toBe(amount);
+});
+
 test("a forged admin-scoped response is not shown on a self page", async () => {
   const p = { ...props(), onLoad: jest.fn(async () => data("all", true)) };
   const { container } = render(<UsageDashboard {...p} />);
@@ -294,7 +316,7 @@ test("member labels render as plain text and model legend remains keyboard-acces
   expect(
     screen.getByRole("option", { name: '<img src=x onerror="alert(1)">' }),
   ).toBeInTheDocument();
-  const legend = screen.getByRole("button", { name: /gpt-4o-mini 请求模型/ });
+  const legend = screen.getByRole("button", { name: /gpt-4o-mini/ });
   fireEvent.click(legend);
   expect(legend).toHaveAttribute("aria-pressed", "true");
 });

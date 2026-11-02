@@ -94,7 +94,6 @@ const PROFILES: Record<string, Omit<FamilyModel, "id">> = {
 };
 const DEFAULT_MODELS = [
   "gpt-4o-mini",
-  "gpt-4.1-nano",
   "gpt-4.1-mini",
   "gpt-4.1",
   "gpt-4o",
@@ -169,7 +168,8 @@ export function modelCatalog(): FamilyModelCatalog {
     !ids.length ||
     ids.length > 20 ||
     !ids.includes(defaultModel) ||
-    ids.some((id) => !Object.hasOwn(PROFILES, id))
+    ids.some((id) => !Object.hasOwn(PROFILES, id)) ||
+    defaultModel === "gpt-4.1-nano"
   )
     throw new FamilyApiError(
       503,
@@ -179,12 +179,16 @@ export function modelCatalog(): FamilyModelCatalog {
   return {
     defaultModel,
     models: [
-      ...ids.map((id) => ({
-        id,
-        ...PROFILES[id],
-        supportsImages: ATTACHMENT_MODELS.has(id),
-        supportsPdf: ATTACHMENT_MODELS.has(id),
-      })),
+      // Retain compatibility with an older env allowlist while excluding the
+      // model shut down 2026-10-23: https://developers.openai.com/api/docs/deprecations
+      ...ids
+        .filter((id) => id !== "gpt-4.1-nano")
+        .map((id) => ({
+          id,
+          ...PROFILES[id],
+          supportsImages: ATTACHMENT_MODELS.has(id),
+          supportsPdf: ATTACHMENT_MODELS.has(id),
+        })),
       ...Object.entries(IMAGE_MODELS).map(([id, profile]) => ({
         id,
         ...profile,

@@ -2738,11 +2738,12 @@ export function FamilyApp() {
                 邀请家人
               </button>
             ) : null}
-            {screen === "admin" ? (
+            {screen === "admin" || workspaceMode !== "chat" ? (
               <button
                 className={styles.secondary}
                 onClick={() => {
                   setScreen("chat");
+                  setWorkspaceMode("chat");
                   setAdminDetail(null);
                   setNewInvite(null);
                 }}

@@ -111,6 +111,11 @@
     overflow-wrap: anywhere;
     line-height: 1.3;
   }
+  strong.money {
+    white-space: nowrap;
+    overflow-wrap: normal;
+    letter-spacing: -0.025em;
+  }
   small {
     font-size: 10px;
     color: var(--muted);
@@ -225,6 +230,7 @@
     text-align: right;
     flex-shrink: 0;
     font-weight: 500;
+    white-space: nowrap;
   }
   small {
     display: block;
@@ -284,6 +290,10 @@
     align-items: center;
     gap: 12px;
     font-size: 12px;
+    > span {
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
   }
   small {
     color: var(--muted);
@@ -364,6 +374,9 @@
     }
     strong {
       font-size: 20px;
+    }
+    strong.money {
+      font-size: clamp(15px, 4.7vw, 20px);
     }
   }
   .card {
