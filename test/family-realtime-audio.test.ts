@@ -213,6 +213,41 @@ test("system interruption gates capture and idempotent dispose releases tracks, 
   expect(Worklet.instances[0].port.close).toHaveBeenCalledTimes(1);
 });
 
+test("a new relay resets playback IDs and offsets without stopping the microphone or context", async () => {
+  const { audio } = bridge();
+  await audio.start(new AbortController().signal);
+  audio.setInputEnabled(true);
+  const context = Context.instances[0],
+    port = Worklet.instances[0].port,
+    chunk = new ArrayBuffer(4800);
+  audio.append("item-a", "response-a", chunk);
+  audio.append("item-a", "response-a", chunk);
+  context.currentTime = 0.085;
+  expect(audio.cursor()?.audioEndMs).toBe(50);
+  const gateMessages = port.postMessage.mock.calls.length;
+  audio.resetPlayback();
+  expect(audio.cursor()).toBeNull();
+  expect(
+    context.sources.every((source) => source.stop.mock.calls.length === 1),
+  ).toBe(true);
+  expect(track.stop).not.toHaveBeenCalled();
+  expect(context.close).not.toHaveBeenCalled();
+  expect(port.close).not.toHaveBeenCalled();
+  expect(port.postMessage).toHaveBeenCalledTimes(gateMessages);
+  expect(mic).toHaveBeenCalledTimes(1);
+  // Even a reused provider item ID starts at zero, rather than inheriting the
+  // old connection's generated/played samples or scheduled output tail.
+  audio.append("item-a", "response-b", chunk);
+  expect(audio.cursor()).toEqual({
+    itemId: "item-a",
+    audioEndMs: 0,
+    idle: false,
+  });
+  expect(context.sources.at(-1)!.start.mock.calls[0][0]).toBeCloseTo(0.12);
+  context.currentTime = 0.17;
+  expect(audio.cursor()?.audioEndMs).toBe(50);
+});
+
 test("stale microphone batches are acknowledged and dropped rather than replayed after a main-thread stall", async () => {
   const { audio, onPcm } = bridge();
   await audio.start(new AbortController().signal);

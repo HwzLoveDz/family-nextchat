@@ -580,6 +580,169 @@ test("a fabricated future playback offset is clamped to generated audio", async 
   ).toBe(100);
 });
 
+test("a delayed VAD cursor for the previous reply never cancels or discards a newer response", async () => {
+  const { peer, socket } = await ready();
+  createTurn(socket);
+  audio(socket, 48000);
+  socket.event({
+    type: "input_audio_buffer.speech_started",
+    item_id: "input_b",
+  });
+  createTurn(socket, "input_b", "response_b", "output_b");
+  const before = peer.sent.filter((event) => event.type === "audio").length;
+  peer.control({ type: "interrupt", itemId: "output_a", audioEndMs: 175 });
+  expect(
+    socket.sent.filter((event) => event.type === "response.cancel"),
+  ).toEqual([]);
+  expect(
+    socket.sent.filter((event) => event.type === "conversation.item.truncate"),
+  ).toEqual([
+    {
+      type: "conversation.item.truncate",
+      item_id: "output_a",
+      content_index: 0,
+      audio_end_ms: 175,
+    },
+  ]);
+  audio(socket, 4800, "response_b", "output_b");
+  expect(peer.sent.filter((event) => event.type === "audio")).toHaveLength(
+    before + 1,
+  );
+  doneTurn(socket, "response_b", "output_b");
+  await flush();
+  expect(peer.sent).toContainEqual(
+    expect.objectContaining({
+      type: "turn_done",
+      responseId: "response_b",
+      status: "completed",
+    }),
+  );
+  expect(markInterrupted).toHaveBeenCalledWith(context, "output_a", 175);
+  expect(markInterrupted).not.toHaveBeenCalledWith(
+    context,
+    "output_b",
+    expect.anything(),
+  );
+});
+
+test("manual interruption still cancels the current response after an older reply exists", async () => {
+  const { socket, peer } = await ready();
+  createTurn(socket);
+  audio(socket, 4800);
+  doneTurn(socket);
+  createTurn(socket, "input_b", "response_b", "output_b");
+  peer.control({ type: "interrupt" });
+  expect(
+    socket.sent.filter((event) => event.type === "response.cancel"),
+  ).toEqual([{ type: "response.cancel", response_id: "response_b" }]);
+  const before = peer.sent.filter((event) => event.type === "audio").length;
+  audio(socket, 4800, "response_b", "output_b");
+  expect(peer.sent.filter((event) => event.type === "audio")).toHaveLength(
+    before,
+  );
+});
+
+test.each([false, true])(
+  "manual stop with an older cursor cancels a thinking response before its output exists (old reply fully heard: %s)",
+  async (heard) => {
+    const { socket, peer } = await ready();
+    createTurn(socket);
+    audio(socket, 4800);
+    doneTurn(socket);
+    if (heard)
+      peer.control({
+        type: "played",
+        itemId: "output_a",
+        audioEndMs: 100,
+        idle: true,
+      });
+    socket.event({ type: "input_audio_buffer.committed", item_id: "input_b" });
+    socket.event({ type: "response.created", response: { id: "response_b" } });
+    peer.control({
+      type: "interrupt",
+      itemId: "output_a",
+      audioEndMs: heard ? 100 : 25,
+      manual: true,
+    });
+    expect(
+      socket.sent.filter((event) => event.type === "response.cancel"),
+    ).toEqual([{ type: "response.cancel", response_id: "response_b" }]);
+    expect(
+      socket.sent.filter(
+        (event) => event.type === "conversation.item.truncate",
+      ),
+    ).toEqual(
+      heard
+        ? []
+        : [
+            {
+              type: "conversation.item.truncate",
+              item_id: "output_a",
+              content_index: 0,
+              audio_end_ms: 25,
+            },
+          ],
+    );
+    socket.event({
+      type: "response.output_item.added",
+      response_id: "response_b",
+      item: { id: "output_b", type: "message", role: "assistant" },
+    });
+    const before = peer.sent.filter((event) => event.type === "audio").length;
+    audio(socket, 4800, "response_b", "output_b");
+    expect(peer.sent.filter((event) => event.type === "audio")).toHaveLength(
+      before,
+    );
+    doneTurn(socket, "response_b", "output_b", "cancelled");
+    await flush();
+    expect(recordResponse).toHaveBeenCalledWith(
+      context,
+      expect.objectContaining({
+        responseId: "response_b",
+        status: "cancelled",
+        usage: expect.objectContaining({ inputTokens: 11, outputTokens: 7 }),
+      }),
+    );
+  },
+);
+
+test("manual bare stop cancels the current response even with no playback item", async () => {
+  const { socket, peer } = await ready();
+  socket.event({ type: "input_audio_buffer.committed", item_id: "input_a" });
+  socket.event({ type: "response.created", response: { id: "response_a" } });
+  peer.control({ type: "interrupt" });
+  expect(
+    socket.sent.filter((event) => event.type === "response.cancel"),
+  ).toEqual([{ type: "response.cancel", response_id: "response_a" }]);
+  expect(
+    socket.sent.some((event) => event.type === "conversation.item.truncate"),
+  ).toBe(false);
+});
+
+test("manual stop before response.created cancels only the already committed pending input", async () => {
+  const { socket, peer } = await ready();
+  socket.event({ type: "input_audio_buffer.committed", item_id: "input_a" });
+  peer.control({ type: "interrupt", manual: true });
+  expect(socket.sent.some((event) => event.type === "response.cancel")).toBe(
+    false,
+  );
+  socket.event({ type: "response.created", response: { id: "response_a" } });
+  socket.event({
+    type: "response.output_item.added",
+    response_id: "response_a",
+    item: { id: "output_a", type: "message", role: "assistant" },
+  });
+  audio(socket);
+  expect(peer.sent.some((event) => event.type === "audio")).toBe(false);
+  doneTurn(socket, "response_a", "output_a", "cancelled");
+  createTurn(socket, "input_b", "response_b", "output_b");
+  audio(socket, 4800, "response_b", "output_b");
+  expect(
+    socket.sent.filter((event) => event.type === "response.cancel"),
+  ).toEqual([{ type: "response.cancel", response_id: "response_a" }]);
+  expect(peer.sent.filter((event) => event.type === "audio")).toHaveLength(1);
+});
+
 test("VAD blocks a cancelled response's late first audio even before a browser cursor exists", async () => {
   const { peer, socket } = await ready();
   createTurn(socket);

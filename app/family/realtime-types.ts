@@ -20,7 +20,7 @@ export interface RealtimeCallCreated {
 }
 export type RealtimeClientControl =
   | { type: "ping" }
-  | { type: "interrupt"; itemId?: string; audioEndMs?: number }
+  | { type: "interrupt"; itemId?: string; audioEndMs?: number; manual?: true }
   | { type: "played"; itemId: string; audioEndMs: number; idle: boolean }
   | { type: "mute"; muted: boolean }
   | { type: "keepalive" }

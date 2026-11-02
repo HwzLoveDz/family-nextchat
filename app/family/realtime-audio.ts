@@ -325,6 +325,17 @@ export class RealtimeAudioBridge {
     this.responseId = null;
     return cursor ? { ...cursor, idle: true } : null;
   }
+  resetPlayback(): void {
+    // Playback item IDs and sample offsets belong to one relay connection.
+    // Reconnecting retains capture/context, but the new relay cannot accept
+    // cursors from the previous connection's playback map.
+    this.interrupt();
+    this.generated.clear();
+    this.played.clear();
+    this.lastItem = null;
+    this.responseId = null;
+    this.nextStart = 0;
+  }
   async resume(): Promise<void> {
     if (!this.context || this.closed) throw new Error("请重新开始通话。");
     await this.context.resume();

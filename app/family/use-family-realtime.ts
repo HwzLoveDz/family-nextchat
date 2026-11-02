@@ -231,7 +231,7 @@ export function useFamilyRealtime(options: {
     [send, updatePhase],
   );
   const interruptCall = useCallback(
-    (call: ActiveCall, notify = true) => {
+    (call: ActiveCall, notify = true, manual = true) => {
       const wasPlaying = call.bridge.cursor()?.idle === false;
       const cursor = call.bridge.interrupt();
       if (call.lastResponse) call.discarded.add(call.lastResponse);
@@ -240,9 +240,14 @@ export function useFamilyRealtime(options: {
         return;
       }
       if (cursor) reportCursor(call, cursor);
-      if (notify)
+      // A VAD acknowledgement only truncates audio that this browser actually
+      // played. A bare acknowledgement could cancel a newer thinking response.
+      // Explicit user/privacy actions still cancel the current server response,
+      // even when the retained playback cursor belongs to an older response.
+      if (notify && (manual || cursor))
         send(call, {
           type: "interrupt",
+          ...(manual ? { manual: true as const } : {}),
           ...(cursor
             ? { itemId: cursor.itemId, audioEndMs: cursor.audioEndMs }
             : {}),
@@ -307,6 +312,7 @@ export function useFamilyRealtime(options: {
       call.lastResponse = null;
       call.discarded.clear();
       call.bridge.setInputEnabled(false);
+      call.bridge.resetPlayback();
       const version = ++call.socketVersion;
       const target = new URL(call.created.wsPath, location.origin);
       target.protocol = location.protocol === "https:" ? "wss:" : "ws:";
@@ -448,7 +454,7 @@ export function useFamilyRealtime(options: {
                 });
               break;
             case "interrupt":
-              interruptCall(call, true);
+              interruptCall(call, true, false);
               break;
             case "turn_done":
               if (

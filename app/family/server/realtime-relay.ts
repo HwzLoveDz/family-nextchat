@@ -190,6 +190,7 @@ export async function startRealtimeRelay(
   const inputTranscripts = new Map<string, string>();
   const awaitingResponse: string[] = [];
   const discardedResponses = new Set<string>();
+  const manuallyCancelledInputs = new Set<string>();
   const pendingHistory = new Set<string>();
   let upstream: WebSocket | undefined;
   let ready = false;
@@ -425,7 +426,12 @@ export async function startRealtimeRelay(
     );
     if (!pendingAudio) close("turn_limit", 1000, false);
   }
-  const interrupt = (itemId?: string, cursor?: number) => {
+  const interrupt = (itemId?: string, cursor?: number, manual = false) => {
+    const manualIntent = manual || !itemId;
+    // Bind an early manual stop to already committed inputs, never a future turn.
+    if (manualIntent)
+      for (const inputId of awaitingResponse)
+        manuallyCancelledInputs.add(inputId);
     let selected = itemId;
     if (!selected && activeResponse)
       selected = turns.get(activeResponse)?.outputItemId;
@@ -437,18 +443,24 @@ export async function startRealtimeRelay(
             !item.interrupted &&
             item.generated > (item.playedMs * PCM_BYTES_PER_SECOND) / 1000,
         )?.[0];
-    if (!selected) return;
-    const item = playback.get(selected);
-    if (!item) throw new Error("UNKNOWN_PLAYBACK_ITEM");
+    const item = selected ? playback.get(selected) : undefined;
+    if (selected && !item) throw new Error("UNKNOWN_PLAYBACK_ITEM");
+    // A VAD cursor can arrive after a newer response was created. An explicit
+    // item cursor belongs only to its own response; a manual bare control may
+    // still target the current response.
+    if (
+      activeResponse &&
+      (manualIntent || item?.responseId === activeResponse)
+    ) {
+      discardedResponses.add(activeResponse);
+      providerSend({ type: "response.cancel", response_id: activeResponse });
+    }
+    if (!selected || !item) return;
     const duration = Math.floor((item.generated / PCM_BYTES_PER_SECOND) * 1000);
     const playedMs = Math.floor(
       Math.min(duration, Math.max(item.playedMs, cursor ?? item.playedMs)),
     );
     item.playedMs = playedMs;
-    if (activeResponse) {
-      discardedResponses.add(activeResponse);
-      providerSend({ type: "response.cancel", response_id: activeResponse });
-    }
     discardedResponses.add(item.responseId);
     if (item.heardComplete && playedMs >= duration) return;
     if (!item.interrupted) {
@@ -494,7 +506,7 @@ export async function startRealtimeRelay(
         end: ["type"],
         keepalive: ["type"],
         mute: ["type", "muted"],
-        interrupt: ["type", "itemId", "audioEndMs"],
+        interrupt: ["type", "itemId", "audioEndMs", "manual"],
         played: ["type", "itemId", "audioEndMs", "idle"],
       };
       if (
@@ -530,9 +542,12 @@ export async function startRealtimeRelay(
       )
         throw new Error("INVALID_PLAYBACK_CURSOR");
       if (control.type === "interrupt") {
+        if (control.manual !== undefined && control.manual !== true)
+          throw new Error("INVALID_CONTROL");
         interrupt(
           control.itemId === undefined ? undefined : identifier(control.itemId),
           control.audioEndMs,
+          control.manual === true,
         );
       } else {
         const itemId = identifier(control.itemId);
@@ -828,6 +843,10 @@ export async function startRealtimeRelay(
           done: false,
         });
         activeResponse = responseId;
+        if (manuallyCancelledInputs.delete(inputItemId)) {
+          discardedResponses.add(responseId);
+          providerSend({ type: "response.cancel", response_id: responseId });
+        }
       } else if (event.type === "response.output_item.added") {
         const turn = turns.get(identifier(event.response_id));
         const item = object(event.item);

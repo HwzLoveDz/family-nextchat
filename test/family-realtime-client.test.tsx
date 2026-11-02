@@ -18,17 +18,30 @@ class Bridge {
   static instances: Bridge[] = [];
   static wait: Promise<void> | null = null;
   enabled = false;
-  position = { itemId: "item-a", audioEndMs: 123, idle: false };
+  position: { itemId: string; audioEndMs: number; idle: boolean } | null = {
+    itemId: "item-a",
+    audioEndMs: 123,
+    idle: false,
+  };
   start = jest.fn(async (_signal: AbortSignal) => {
     if (Bridge.wait) await Bridge.wait;
   });
-  append = jest.fn();
+  append = jest.fn(
+    (itemId: string, _responseId: string, _bytes: ArrayBuffer) => {
+      this.position = { itemId, audioEndMs: 123, idle: false };
+    },
+  );
   dispose = jest.fn(async () => {});
   setInputEnabled = jest.fn((value: boolean) => {
     this.enabled = value;
   });
-  interrupt = jest.fn(() => ({ ...this.position, idle: true }));
+  interrupt = jest.fn(() =>
+    this.position ? { ...this.position, idle: true } : null,
+  );
   cursor = jest.fn(() => this.position);
+  resetPlayback = jest.fn(() => {
+    this.position = null;
+  });
   resume = jest.fn(async () => {
     this.callbacks.onBlocked(false);
   });
@@ -245,20 +258,84 @@ test("VAD interrupt reports played cursor and rejects stale old-response audio w
     });
   });
   expect(audio.append).toHaveBeenCalledTimes(1);
-  expect(
-    socket.send.mock.calls.some(
-      ([text]) =>
-        typeof text === "string" &&
-        JSON.parse(text).type === "interrupt" &&
-        JSON.parse(text).audioEndMs === 123,
-    ),
-  ).toBe(true);
+  const acknowledgements = socket.send.mock.calls
+    .filter(([frame]) => typeof frame === "string")
+    .map(([frame]) => JSON.parse(frame as string))
+    .filter((message) => message.type === "interrupt");
+  expect(acknowledgements).toEqual([
+    { type: "interrupt", itemId: "item-a", audioEndMs: 123 },
+  ]);
   expect(view.result.current.transcripts.map((item) => item.itemId)).toEqual([
     "input-a",
     "item-a",
   ]);
   expect(view.result.current.transcripts[0].text).toBe("合成问题");
   expect(view.result.current.transcripts[1].interrupted).toBe(true);
+});
+
+test("late VAD interrupts without a playback cursor never send a bare cancellation of the next response", async () => {
+  const view = hook(),
+    socket = await start(view),
+    audio = Bridge.instances[0];
+  audio.position = null;
+  act(() => {
+    socket.message({ type: "state", state: "user_speaking" });
+    socket.message({ type: "state", state: "thinking" });
+    socket.message({ type: "interrupt" });
+    socket.message({ type: "interrupt" });
+  });
+  expect(audio.interrupt).toHaveBeenCalledTimes(2);
+  expect(
+    socket.send.mock.calls
+      .filter(([frame]) => typeof frame === "string")
+      .map(([frame]) => JSON.parse(frame as string))
+      .filter((message) => message.type === "interrupt"),
+  ).toEqual([]);
+  act(() =>
+    socket.message({
+      type: "audio",
+      itemId: "item-b",
+      responseId: "response-b",
+      audio: "AAAAAA==",
+    }),
+  );
+  expect(audio.append).toHaveBeenCalledTimes(1);
+  expect(audio.append.mock.calls.at(-1)?.[1]).toBe("response-b");
+});
+
+test("manual interruption during thinking is explicit even when only the finished response A cursor remains", async () => {
+  const view = hook(),
+    socket = await start(view),
+    audio = Bridge.instances[0];
+  act(() =>
+    socket.message({
+      type: "audio",
+      itemId: "item-a",
+      responseId: "response-a",
+      audio: "AAAAAA==",
+    }),
+  );
+  audio.position = { itemId: "item-a", audioEndMs: 123, idle: true };
+  act(() => {
+    socket.message({ type: "state", state: "thinking" });
+    socket.message({ type: "interrupt" });
+    view.result.current.interrupt();
+  });
+  expect(
+    socket.send.mock.calls
+      .filter(([frame]) => typeof frame === "string")
+      .map(([frame]) => JSON.parse(frame as string))
+      .filter((message) => message.type === "interrupt"),
+  ).toEqual([
+    { type: "interrupt", itemId: "item-a", audioEndMs: 123 },
+    { type: "interrupt", manual: true, itemId: "item-a", audioEndMs: 123 },
+  ]);
+  audio.position = null;
+  act(() => view.result.current.interrupt());
+  expect(JSON.parse(socket.send.mock.calls.at(-1)![0] as string)).toEqual({
+    type: "interrupt",
+    manual: true,
+  });
 });
 test("identity probes gate audio without discarding state; owner switch disposes without refreshing the old account", async () => {
   const view = hook(),
@@ -300,8 +377,15 @@ test("identity probes gate audio without discarding state; owner switch disposes
 test("announced rotation reconnects the same call without replaying microphone data; unauthorized close never retries", async () => {
   jest.useFakeTimers();
   const view = hook(),
-    first = await start(view);
+    first = await start(view),
+    audio = Bridge.instances[0];
   act(() => {
+    first.message({
+      type: "audio",
+      itemId: "item-a",
+      responseId: "response-a",
+      audio: "AAAAAA==",
+    });
     first.message({ type: "rotate" });
     first.peerClose(1012);
   });
@@ -316,12 +400,43 @@ test("announced rotation reconnects the same call without replaying microphone d
     ),
   ).toHaveLength(1);
   act(() => Socket.instances[1].ready());
-  expect(Bridge.instances[0].enabled).toBe(true);
+  expect(audio.enabled).toBe(true);
+  expect(audio.resetPlayback).toHaveBeenCalledTimes(2);
+  expect(audio.position).toBeNull();
+  act(() => Socket.instances[1].message({ type: "interrupt" }));
+  await act(async () => {
+    await jest.advanceTimersByTimeAsync(250);
+  });
+  expect(
+    Socket.instances[1].send.mock.calls
+      .filter(([frame]) => typeof frame === "string")
+      .map(([frame]) => JSON.parse(frame as string))
+      .filter((message) => ["played", "interrupt"].includes(message.type)),
+  ).toEqual([]);
   expect(
     Socket.instances[1].send.mock.calls.every(
       ([frame]) => typeof frame === "string",
     ),
   ).toBe(true);
+  act(() =>
+    Socket.instances[1].message({
+      type: "audio",
+      itemId: "item-b",
+      responseId: "response-b",
+      audio: "AAAAAA==",
+    }),
+  );
+  await act(async () => {
+    await jest.advanceTimersByTimeAsync(250);
+  });
+  expect(
+    Socket.instances[1].send.mock.calls
+      .filter(([frame]) => typeof frame === "string")
+      .map(([frame]) => JSON.parse(frame as string))
+      .filter((message) => message.type === "played"),
+  ).toEqual([
+    { type: "played", itemId: "item-b", audioEndMs: 123, idle: false },
+  ]);
   act(() => Socket.instances[1].peerClose(1008));
   expect(onUnauthorized).toHaveBeenCalledTimes(1);
   await act(async () => {
