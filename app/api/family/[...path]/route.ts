@@ -16,11 +16,13 @@ import {
   deleteChat,
   generate,
   listChats,
+  listChatPage,
   newChat,
   updateChat,
   cancelGeneration,
   validId,
 } from "@/app/family/server/chats";
+import { listWorkspaceFiles } from "@/app/family/server/workspace-files";
 import { modelCatalog } from "@/app/family/server/models";
 import { providerKeySummary } from "@/app/family/server/provider-keys";
 import {
@@ -100,6 +102,7 @@ async function handle(
     if (
       path[0] === "chats" ||
       path[0] === "attachments" ||
+      path[0] === "files" ||
       joined === "models" ||
       (path[0] === "admin" &&
         (path.includes("chats") || path.includes("attachments")))
@@ -151,7 +154,15 @@ async function handle(
       );
     if (joined === "chats") {
       if (method === "GET")
-        return finish(json({ chats: await listChats(userId) }));
+        return finish(
+          json(
+            await listChatPage(userId, {
+              q: new URL(request.url).searchParams.get("q"),
+              view: new URL(request.url).searchParams.get("view"),
+              cursor: new URL(request.url).searchParams.get("cursor"),
+            }),
+          ),
+        );
       if (method === "POST")
         return finish(
           json({ chat: await newChat(userId, await bodyJson(request, 2048)) }),
@@ -171,9 +182,30 @@ async function handle(
         );
       }
       if (method === "GET")
-        return finish(json(await chatDetail(path[1], userId)));
+        return finish(
+          json(
+            await chatDetail(
+              path[1],
+              userId,
+              false,
+              new URL(request.url).searchParams.get("before"),
+            ),
+          ),
+        );
       if (method === "DELETE")
         return finish(json(await deleteChat(path[1], userId)));
+    }
+    if (method === "GET" && joined === "files") {
+      const params = new URL(request.url).searchParams;
+      return finish(
+        json(
+          await listWorkspaceFiles(userId, {
+            q: params.get("q"),
+            chatId: params.get("chatId"),
+            cursor: params.get("cursor"),
+          }),
+        ),
+      );
     }
     if (
       method === "POST" &&
@@ -240,7 +272,12 @@ async function handle(
         return finish(json({ chats: await listChats(path[2], true) }));
       }
       if (method === "GET" && path[1] === "chats" && path.length === 3) {
-        const detail = await chatDetail(path[2], undefined, true);
+        const detail = await chatDetail(
+          path[2],
+          undefined,
+          true,
+          new URL(request.url).searchParams.get("before"),
+        );
         await audit(userId, "chat.content.read", undefined, path[2]);
         return finish(json(detail));
       }

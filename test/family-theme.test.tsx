@@ -34,9 +34,9 @@ describe("family-only visual preferences", () => {
     window.localStorage.clear();
   });
 
-  test("defaults to cream and persists only the selected enum across remounts", () => {
+  test("defaults to paper and persists only the selected enum across remounts", () => {
     const first = renderHook(() => useFamilyTheme());
-    expect(first.result.current.theme.id).toBe("cream");
+    expect(first.result.current.theme.id).toBe("paper");
     act(() => first.result.current.setTheme("forest"));
     expect(first.result.current.theme.id).toBe("forest");
     expect(localStorage.getItem(FAMILY_THEME_STORAGE_KEY)).toBe("forest");
@@ -53,9 +53,9 @@ describe("family-only visual preferences", () => {
       '{"id":"midnight","variables":{"--paper":"untrusted"}}',
     );
     const invalid = renderHook(() => useFamilyTheme());
-    expect(invalid.result.current.theme.id).toBe("cream");
+    expect(invalid.result.current.theme.id).toBe("paper");
     expect(invalid.result.current.style).toMatchObject(
-      getFamilyTheme("cream").variables,
+      getFamilyTheme("paper").variables,
     );
     invalid.unmount();
     jest.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
@@ -65,7 +65,7 @@ describe("family-only visual preferences", () => {
       throw new DOMException("blocked", "SecurityError");
     });
     const blocked = renderHook(() => useFamilyTheme());
-    expect(blocked.result.current.theme.id).toBe("cream");
+    expect(blocked.result.current.theme.id).toBe("paper");
     expect(() =>
       act(() => blocked.result.current.setTheme("midnight")),
     ).not.toThrow();
@@ -83,7 +83,7 @@ describe("family-only visual preferences", () => {
         storageArea: localStorage,
       }),
     );
-    expect(hook.result.current.theme.id).toBe("cream");
+    expect(hook.result.current.theme.id).toBe("paper");
     localStorage.setItem(FAMILY_THEME_STORAGE_KEY, "ocean");
     fireEvent(
       window,
@@ -102,19 +102,19 @@ describe("family-only visual preferences", () => {
         storageArea: localStorage,
       }),
     );
-    expect(hook.result.current.theme.id).toBe("cream");
+    expect(hook.result.current.theme.id).toBe("paper");
   });
 
-  test("six real radio choices apply immediately in the scoped portal and Escape restores button focus", () => {
+  test("eight real radio choices apply immediately in the scoped portal and Escape restores button focus", () => {
     render(<Harness />);
     const trigger = screen.getByRole("button", { name: "主题" });
     fireEvent.click(trigger);
     const panel = screen.getByRole("region", { name: "主题设置" });
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     expect(trigger).toHaveAttribute("aria-controls", panel.id);
-    expect(screen.getAllByRole("radio")).toHaveLength(6);
+    expect(screen.getAllByRole("radio")).toHaveLength(8);
     expect(
-      screen.getByRole("radio", { name: getFamilyTheme("cream").label }),
+      screen.getByRole("radio", { name: getFamilyTheme("paper").label }),
     ).toHaveFocus();
     const midnight = getFamilyTheme("midnight");
     fireEvent.click(screen.getByRole("radio", { name: midnight.label }));
@@ -191,7 +191,7 @@ describe("family-only visual preferences", () => {
         FAMILY_THEMES.map((theme) =>
           screen.getByRole("radio", { name: theme.label }),
         ),
-      ).toHaveLength(6);
+      ).toHaveLength(8);
     } finally {
       cleanup();
       if (original) Object.defineProperty(window, "visualViewport", original);

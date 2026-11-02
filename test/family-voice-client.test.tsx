@@ -475,7 +475,12 @@ describe("family voice browser lifecycle without real media or networks", () => 
       fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
         target: { value: "" },
       });
-      fireEvent.click(screen.getByRole("button", { name: "点击录音模式" }));
+      fireEvent.click(screen.getByRole("button", { name: "语音设置" }));
+      fireEvent.click(screen.getByRole("tab", { name: "语音" }));
+      fireEvent.change(screen.getByRole("combobox", { name: "语音输入方式" }), {
+        target: { value: "tap" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "关闭设置" }));
       const record = screen.getByRole("button", {
         name: "点击录音，再次点击发送",
       });

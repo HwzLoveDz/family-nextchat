@@ -38,6 +38,8 @@ export interface FamilyChat {
   archived: boolean;
   createdAt: string;
   updatedAt: string;
+  pinnedAt?: string | null;
+  matchSnippet?: string | null;
 }
 export interface FamilyUsage {
   source: "reported" | "unknown";
@@ -110,6 +112,8 @@ export type FamilyMessageRequest = {
 export interface FamilyChatDetail {
   chat: FamilyChat;
   messages: FamilyMessage[];
+  hasMoreMessages?: boolean;
+  nextBeforeMessageId?: string | null;
 }
 export interface FamilyAdminUser extends FamilyUser {
   createdAt: string;

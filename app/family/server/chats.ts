@@ -14,6 +14,13 @@ import {
 } from "./provider-keys";
 import { allowedModel, completionBody, modelCatalog } from "./models";
 import {
+  cursorScope,
+  decodeWorkspaceCursor,
+  encodeWorkspaceCursor,
+  workspaceQuery,
+  WORKSPACE_PAGE_SIZE,
+} from "./workspace-pagination";
+import {
   prepareAttachments,
   loadMessageAttachments,
   storeAttachments,
@@ -49,6 +56,8 @@ function chatJson(row: Record<string, any>): FamilyChat {
     archived: !!row.deleted_at,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
+    pinnedAt: row.pinned_at?.toISOString() ?? null,
+    ...(row.match_snippet ? { matchSnippet: row.match_snippet } : {}),
   };
 }
 function usageJson(row: Record<string, any>): FamilyUsage {
@@ -88,6 +97,62 @@ export async function listChats(userId: string, includeArchived = false) {
     )
   ).rows.map(chatJson);
 }
+/** Search only the authenticated owner's current message versions. No wildcard syntax. */
+export async function listChatPage(
+  userId: string,
+  options: {
+    q?: string | null;
+    view?: string | null;
+    cursor?: string | null;
+  } = {},
+): Promise<{ chats: FamilyChat[]; nextCursor: string | null }> {
+  const q = workspaceQuery(options.q);
+  const view = options.view || "active";
+  if (view !== "active" && view !== "archived")
+    throw new FamilyApiError(400, "对话列表类型无效。");
+  const scope = cursorScope("chats", userId, view, q);
+  const cursor = decodeWorkspaceCursor(options.cursor, scope);
+  const rows = (
+    await getPool().query(
+      `SELECT c.*,
+      to_char(c.updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_at,
+      to_char(c.pinned_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_pin,
+      CASE WHEN hit.content IS NOT NULL THEN
+      substring(hit.content FROM greatest(1,strpos(lower(hit.content),lower($2))-40) FOR 160)
+      ELSE NULL END AS match_snippet
+    FROM family_chat c
+    LEFT JOIN LATERAL (
+      SELECT m.content FROM family_message m JOIN family_generation g ON g.id=m.generation_id
+      WHERE $2<>'' AND m.chat_id=c.id AND g.chat_id=c.id AND g.user_id=$1
+        AND g.superseded_at IS NULL AND strpos(lower(m.content),lower($2))>0
+      ORDER BY m.position DESC LIMIT 1
+    ) hit ON true
+    WHERE c.user_id=$1 AND ${
+      view === "archived" ? "c.deleted_at IS NOT NULL" : "c.deleted_at IS NULL"
+    }
+      AND ($2='' OR strpos(lower(c.title),lower($2))>0 OR hit.content IS NOT NULL)
+      AND ($3::timestamptz IS NULL OR
+        (COALESCE(c.pinned_at,'-infinity'::timestamptz),c.updated_at,c.id)<
+        (COALESCE($4::timestamptz,'-infinity'::timestamptz),$3::timestamptz,$5::uuid))
+    ORDER BY c.pinned_at DESC NULLS LAST,c.updated_at DESC,c.id DESC LIMIT 51`,
+      [userId, q, cursor?.at ?? null, cursor?.pin ?? null, cursor?.id ?? null],
+    )
+  ).rows;
+  const page = rows.slice(0, WORKSPACE_PAGE_SIZE);
+  const last = page.at(-1);
+  return {
+    chats: page.map(chatJson),
+    nextCursor:
+      rows.length > WORKSPACE_PAGE_SIZE && last
+        ? encodeWorkspaceCursor({
+            id: last.id,
+            at: last.cursor_at,
+            pin: last.cursor_pin ?? null,
+            scope,
+          })
+        : null,
+  };
+}
 export async function newChat(userId: string, body: Record<string, unknown>) {
   const title =
     body.title === undefined ? "新对话" : text(body.title, 80, "标题");
@@ -110,13 +175,19 @@ export async function updateChat(
   validId(chatId);
   if (
     !Object.keys(body).length ||
-    Object.keys(body).some((key) => !["title", "model"].includes(key))
+    Object.keys(body).some(
+      (key) => !["title", "model", "pinned", "archived"].includes(key),
+    ) ||
+    (body.pinned !== undefined && typeof body.pinned !== "boolean") ||
+    (body.archived !== undefined && typeof body.archived !== "boolean")
   )
     throw new FamilyApiError(400, "请提供对话名称或列表中的模型。");
   return transaction(async (client) => {
     await lockRealtimeChat(client, userId, chatId);
     const owner = await client.query(
-      "SELECT * FROM family_chat WHERE id=$1 AND user_id=$2 AND deleted_at IS NULL FOR UPDATE",
+      "SELECT * FROM family_chat WHERE id=$1 AND user_id=$2" +
+        (body.archived === false ? "" : " AND deleted_at IS NULL") +
+        " FOR UPDATE",
       [chatId, userId],
     );
     if (!owner.rowCount) throw new FamilyApiError(404, "对话不存在。");
@@ -143,8 +214,15 @@ export async function updateChat(
         "GENERATION_BUSY",
       );
     const result = await client.query(
-      "UPDATE family_chat SET title=$1,model=$2,updated_at=now() WHERE id=$3 AND user_id=$4 AND deleted_at IS NULL RETURNING *",
-      [title, model, chatId, userId],
+      "UPDATE family_chat SET title=$1,model=$2,updated_at=now(),pinned_at=CASE WHEN $5::boolean IS NULL THEN pinned_at WHEN $5 THEN COALESCE(pinned_at,now()) ELSE NULL END,deleted_at=CASE WHEN $6::boolean IS NULL THEN deleted_at WHEN $6 THEN COALESCE(deleted_at,now()) ELSE NULL END WHERE id=$3 AND user_id=$4 RETURNING *",
+      [
+        title,
+        model,
+        chatId,
+        userId,
+        body.pinned ?? null,
+        body.archived ?? null,
+      ],
     );
     return chatJson(result.rows[0]);
   });
@@ -153,6 +231,7 @@ export async function chatDetail(
   chatId: string,
   userId?: string,
   includeArchived = false,
+  before?: string | null,
 ): Promise<FamilyChatDetail> {
   validId(chatId);
   const result = await getPool().query(
@@ -162,19 +241,34 @@ export async function chatDetail(
     userId ? [chatId, userId] : [chatId],
   );
   if (!result.rows[0]) throw new FamilyApiError(404, "对话不存在。");
+  let beforePosition: string | number | null = null;
+  if (before) {
+    validId(before);
+    const pivot = (
+      await getPool().query(
+        "SELECT m.position FROM family_message m JOIN family_generation g ON g.id=m.generation_id WHERE m.id=$1 AND m.chat_id=$2" +
+          (!userId && includeArchived ? "" : " AND g.superseded_at IS NULL") +
+          (userId ? " AND g.user_id=$3" : ""),
+        userId ? [before, chatId, userId] : [before, chatId],
+      )
+    ).rows[0];
+    if (!pivot) throw new FamilyApiError(404, "消息位置不存在。");
+    beforePosition = pivot.position;
+  }
   const messages = await getPool().query(
     "SELECT m.*,g.model AS requested_model,g.actual_model,g.superseded_at,g.input_tokens,g.output_tokens,g.usage_source FROM family_message m JOIN family_generation g ON g.id=m.generation_id WHERE m.chat_id=$1" +
       (!userId && includeArchived ? "" : " AND g.superseded_at IS NULL") +
-      " ORDER BY m.position LIMIT 400",
-    [chatId],
+      " AND ($2::bigint IS NULL OR m.position<$2::bigint) ORDER BY m.position DESC LIMIT 81",
+    [chatId, beforePosition],
   );
+  const page = messages.rows.slice(0, 80).reverse();
   const attachments = await loadMessageAttachments(
     getPool(),
-    messages.rows.filter((row) => row.role === "user").map((row) => row.id),
+    page.filter((row) => row.role === "user").map((row) => row.id),
   );
   return {
     chat: chatJson(result.rows[0]),
-    messages: messages.rows.map((row) =>
+    messages: page.map((row) =>
       messageJson({
         ...row,
         attachments: attachments
@@ -182,6 +276,8 @@ export async function chatDetail(
           ?.map(({ data, textContent, textCharacters, ...meta }) => meta),
       }),
     ),
+    hasMoreMessages: messages.rows.length > 80,
+    nextBeforeMessageId: messages.rows.length > 80 ? page[0]?.id ?? null : null,
   };
 }
 export async function deleteChat(chatId: string, userId: string) {

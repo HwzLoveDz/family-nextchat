@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { RealtimeController, RealtimePhase } from "./use-family-realtime";
 import type { RealtimeVad, RealtimeVoice } from "./realtime-types";
 import styles from "./realtime-panel.module.scss";
@@ -23,19 +23,32 @@ function clock(seconds: number) {
 }
 export function RealtimePanel({
   controller: c,
+  embedded = false,
 }: {
   controller: RealtimeController;
+  embedded?: boolean;
 }) {
   const id = useId(),
     trigger = useRef<HTMLButtonElement>(null),
     hangup = useRef<HTMLButtonElement>(null),
-    wasBusy = useRef(false);
+    wasBusy = useRef(false),
+    transcriptList = useRef<HTMLOListElement>(null),
+    following = useRef(true);
+  const [showLatest, setShowLatest] = useState(false);
   useEffect(() => {
-    if (c.busy && !wasBusy.current) hangup.current?.focus();
-    else if (!c.busy && wasBusy.current) trigger.current?.focus();
+    if (c.busy && !wasBusy.current) {
+      following.current = true;
+      setShowLatest(false);
+      hangup.current?.focus();
+    } else if (!c.busy && wasBusy.current) trigger.current?.focus();
     wasBusy.current = c.busy;
   }, [c.busy]);
+  useEffect(() => {
+    if (!c.busy || !following.current || !transcriptList.current) return;
+    transcriptList.current.scrollTop = transcriptList.current.scrollHeight;
+  }, [c.busy, c.transcripts]);
   const final = c.transcripts.filter((item) => item.final).at(-1);
+  if (embedded && !c.busy) return null;
   return (
     <section className={`${styles.root} ${c.busy ? styles.active : ""}`}>
       {!c.busy ? (
@@ -153,9 +166,16 @@ export function RealtimePanel({
             </div>
           ) : null}
           <ol
+            ref={transcriptList}
             className={styles.transcripts}
             aria-label="实时语音字幕"
             aria-live="off"
+            onScroll={(event) => {
+              const list = event.currentTarget;
+              following.current =
+                list.scrollHeight - list.clientHeight - list.scrollTop < 72;
+              setShowLatest(!following.current);
+            }}
           >
             {!c.transcripts.length ? (
               <li className={styles.empty}>
@@ -179,6 +199,21 @@ export function RealtimePanel({
               ))
             )}
           </ol>
+          {showLatest ? (
+            <button
+              type="button"
+              className={styles.latest}
+              onClick={() => {
+                following.current = true;
+                setShowLatest(false);
+                if (transcriptList.current)
+                  transcriptList.current.scrollTop =
+                    transcriptList.current.scrollHeight;
+              }}
+            >
+              回到最新字幕 ↓
+            </button>
+          ) : null}
           <span className={styles.srOnly} aria-live="polite">
             {final
               ? `${final.role === "user" ? "你" : "AI"}：${final.text}`

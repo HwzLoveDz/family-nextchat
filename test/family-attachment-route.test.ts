@@ -38,6 +38,7 @@ jest.unstable_mockModule("@/app/family/server/chats", () => ({
   generate,
   validId: (id: string) => id,
   listChats: async () => [],
+  listChatPage: async () => ({ chats: [], nextCursor: null }),
   newChat: async () => ({}),
   updateChat: async () => ({}),
   chatDetail: async () => ({}),

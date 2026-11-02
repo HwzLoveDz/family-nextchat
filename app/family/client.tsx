@@ -8,8 +8,15 @@ import {
   useRef,
   useState,
 } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { FamilyMarkdown } from "./message-markdown";
+import { FamilySettings } from "./family-settings";
+import { FamilyIcon } from "./icons";
+import { useWorkspacePreferences } from "./use-workspace-preferences";
+import type {
+  FamilyFilePage,
+  FamilyFileSummary,
+  FamilySessionSummary,
+} from "./workspace-types";
 import {
   FAMILY_NOTICE,
   type FamilyAdminUser,
@@ -183,38 +190,12 @@ const MessageBody = memo(function MessageBody({
       </div>
       <div className={styles.markdown}>
         {message.content ? (
-          <ReactMarkdown
-            skipHtml
-            remarkPlugins={[remarkGfm]}
-            disallowedElements={[
-              "img",
-              "iframe",
-              "video",
-              "audio",
-              "object",
-              "embed",
-              "script",
-              "style",
-              "form",
-              "input",
-            ]}
-            components={{
-              a: ({ href, children }) =>
-                href && /^https?:\/\//i.test(href) ? (
-                  <a
-                    href={href}
-                    target="_blank"
-                    rel="noopener noreferrer nofollow"
-                  >
-                    {children}
-                  </a>
-                ) : (
-                  <span>{children}</span>
-                ),
-            }}
-          >
-            {message.content}
-          </ReactMarkdown>
+          <FamilyMarkdown
+            content={message.content}
+            streaming={message.status === "streaming"}
+            actionsDisabled={!onCopy || attachmentScope?.readable === false}
+            canAct={attachmentScope?.isCurrent}
+          />
         ) : (
           <span className={styles.muted}>
             {message.role === "user" && message.attachments?.length
@@ -314,6 +295,28 @@ async function consumeEvents(
 export function FamilyApp() {
   useFamilyViewport();
   const appearance = useFamilyTheme();
+  const { preferences, setPreferences } = useWorkspacePreferences();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [workspaceMode, setWorkspaceMode] = useState<"chat" | "files">("chat");
+  const [archivedView, setArchivedView] = useState(false);
+  const [nextChatCursor, setNextChatCursor] = useState<string | null>(null);
+  const [listLoading, setListLoading] = useState(false);
+  const [hasOlderMessages, setHasOlderMessages] = useState(false);
+  const [olderCursor, setOlderCursor] = useState<string | null>(null);
+  const [olderLoading, setOlderLoading] = useState(false);
+  const [files, setFiles] = useState<FamilyFileSummary[]>([]);
+  const [fileSearch, setFileSearch] = useState("");
+  const [fileCursor, setFileCursor] = useState<string | null>(null);
+  const [fileLoading, setFileLoading] = useState(false);
+  const [followLatest, setFollowLatest] = useState(true);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const messagesHost = useRef<HTMLDivElement>(null);
+  const followMessages = useRef(true);
+  const searchVersion = useRef(0);
+  const filesVersion = useRef(0);
+  const chatQuery = useRef({ search: "", archivedView: false });
+
   const [screen, setScreen] = useState<Screen>("loading");
   const [status, setStatus] = useState<FamilySiteStatus | null>(null);
   const [user, setUser] = useState<FamilyUser | null>(null);
@@ -335,6 +338,7 @@ export function FamilyApp() {
   const [modelLoading, setModelLoading] = useState(false);
   const [modelError, setModelError] = useState("");
   const [search, setSearch] = useState("");
+  chatQuery.current = { search, archivedView };
   const [renameTitle, setRenameTitle] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [copiedMessage, setCopiedMessage] = useState<string | null>(null);
@@ -479,7 +483,7 @@ export function FamilyApp() {
     async <T,>(
       path: string,
       init: RequestInit = {},
-      timeoutMs?: number,
+      timeoutMs = 15000,
     ): Promise<T> => {
       const generation = epoch.current;
       const controller = new AbortController();
@@ -554,6 +558,22 @@ export function FamilyApp() {
     downloadUrls.current.clear();
     setUser(null);
     setExpiresAt("");
+    setSettingsOpen(false);
+    setWorkspaceMode("chat");
+    setArchivedView(false);
+    setNextChatCursor(null);
+    setListLoading(false);
+    searchVersion.current++;
+    filesVersion.current++;
+    setFiles([]);
+    setFileSearch("");
+    setFileCursor(null);
+    setFileLoading(false);
+    setHasOlderMessages(false);
+    setOlderCursor(null);
+    setOlderLoading(false);
+    followMessages.current = true;
+    setFollowLatest(true);
     setChats([]);
     setSelectedChat(null);
     setMessages([]);
@@ -800,10 +820,40 @@ export function FamilyApp() {
     };
   }, [checkIdentity, clearPrivate]);
 
-  const loadChats = useCallback(async () => {
-    const data = await request<{ chats: FamilyChat[] }>("/api/family/chats");
-    setChats(data.chats);
-  }, [request]);
+  const loadChats = useCallback(
+    async (cursor?: string) => {
+      if (!identityVerified.current) return;
+      const version = ++searchVersion.current;
+      const query = chatQuery.current;
+      const params = new URLSearchParams();
+      if (query.search.trim()) params.set("q", query.search.trim());
+      if (query.archivedView) params.set("view", "archived");
+      if (cursor) params.set("cursor", cursor);
+      setListLoading(true);
+      try {
+        const data = await request<{
+          chats: FamilyChat[];
+          nextCursor?: string | null;
+        }>(`/api/family/chats${params.toString() ? `?${params}` : ""}`);
+        if (version !== searchVersion.current || !identityVerified.current)
+          return;
+        setChats((previous) =>
+          cursor
+            ? [
+                ...previous,
+                ...data.chats.filter(
+                  (chat) => !previous.some((old) => old.id === chat.id),
+                ),
+              ]
+            : data.chats,
+        );
+        setNextChatCursor(data.nextCursor ?? null);
+      } finally {
+        if (version === searchVersion.current) setListLoading(false);
+      }
+    },
+    [request],
+  );
   const loadModels = useCallback(async () => {
     const generation = epoch.current;
     setModelLoading(true);
@@ -823,9 +873,6 @@ export function FamilyApp() {
   useEffect(() => {
     if (!user || user.status !== "approved" || status?.schemaReady === false)
       return;
-    void loadChats().catch((failure) => {
-      if (!(failure instanceof StaleRequest)) setError(errorText(failure));
-    });
     void loadModels();
   }, [
     user?.id,
@@ -877,7 +924,33 @@ export function FamilyApp() {
   }, [user?.id, user?.status, request, checkIdentity]);
 
   useEffect(() => {
-    bottom.current?.scrollIntoView({ block: "end" });
+    if (!user || user.status !== "approved" || status?.schemaReady === false)
+      return;
+    // Invalidate immediately, before debounce, so old search results cannot win.
+    searchVersion.current++;
+    const timer = window.setTimeout(
+      () => {
+        void loadChats().catch((failure) => {
+          if (!(failure instanceof StaleRequest)) setError(errorText(failure));
+        });
+      },
+      search.trim() ? 250 : 0,
+    );
+    return () => window.clearTimeout(timer);
+  }, [
+    user?.id,
+    user?.status,
+    status?.schemaReady,
+    status?.schemaVersion,
+    checking,
+    search,
+    archivedView,
+    loadChats,
+  ]);
+
+  useEffect(() => {
+    if (followMessages.current)
+      bottom.current?.scrollIntoView({ block: "end" });
   }, [messages]);
   useEffect(() => {
     if (editingMessage && !checking) composerInput.current?.focus();
@@ -984,9 +1057,21 @@ export function FamilyApp() {
 
   const selectChat = async (id: string) => {
     if (id === selectedChatRef.current && activeChat?.id === id) {
+      setWorkspaceMode("chat");
       setSidebarOpen(false);
       return;
     }
+    if (
+      (draft.trim() || draftAttachments.hasAny() || editingMessage) &&
+      !window.confirm("当前有未发送的内容。放弃草稿和附件，切换聊天？")
+    )
+      return;
+    setWorkspaceMode("chat");
+    followMessages.current = true;
+    setFollowLatest(true);
+    setHasOlderMessages(false);
+    setOlderCursor(null);
+    setOlderLoading(false);
     attachmentReset.current();
     voiceReset.current();
     const version = ++listVersion.current;
@@ -1009,6 +1094,8 @@ export function FamilyApp() {
       );
       if (version === listVersion.current) {
         setMessages(data.messages);
+        setHasOlderMessages(data.hasMoreMessages ?? false);
+        setOlderCursor(data.nextBeforeMessageId ?? null);
         setActiveChat(data.chat);
         setSelectedModel(data.chat.model || defaultModel.current);
       }
@@ -1062,6 +1149,18 @@ export function FamilyApp() {
     const detail = await request<FamilyChatDetail>(
       `/api/family/chats/${encodeURIComponent(id)}`,
     );
+    let pages = 0;
+    while (detail.hasMoreMessages && detail.nextBeforeMessageId) {
+      if (++pages > 250) throw new Error("对话过长，暂时无法完整导出。");
+      const older = await request<FamilyChatDetail>(
+        `/api/family/chats/${encodeURIComponent(
+          id,
+        )}?before=${encodeURIComponent(detail.nextBeforeMessageId)}`,
+      );
+      detail.messages = [...older.messages, ...detail.messages];
+      detail.hasMoreMessages = older.hasMoreMessages;
+      detail.nextBeforeMessageId = older.nextBeforeMessageId;
+    }
     if (
       generation !== epoch.current ||
       !identityVerified.current ||
@@ -1377,6 +1476,8 @@ export function FamilyApp() {
           );
           if (selectedChatRef.current === chatId) {
             setMessages(detail.messages);
+            setHasOlderMessages(detail.hasMoreMessages ?? false);
+            setOlderCursor(detail.nextBeforeMessageId ?? null);
             acceptChat(detail.chat);
             setSelectedModel(detail.chat.model || defaultModel.current);
           }
@@ -1468,6 +1569,8 @@ export function FamilyApp() {
         );
         if (selectedChatRef.current === active.chatId) {
           setMessages(detail.messages);
+          setHasOlderMessages(detail.hasMoreMessages ?? false);
+          setOlderCursor(detail.nextBeforeMessageId ?? null);
           acceptChat(detail.chat);
         }
         if (message && message.status !== "streaming") {
@@ -1583,6 +1686,8 @@ export function FamilyApp() {
           setSelectedChat(chatId);
           setActiveChat(detail.chat);
           setMessages(detail.messages);
+          setHasOlderMessages(detail.hasMoreMessages ?? false);
+          setOlderCursor(detail.nextBeforeMessageId ?? null);
           setSelectedModel(detail.chat.model || defaultModel.current);
         })
         .catch((failure) => {
@@ -1615,11 +1720,212 @@ export function FamilyApp() {
     if (version === adminVersion.current) setAdminDetail(detail);
   };
 
+  const workspaceRequest = async <T,>(
+    path: string,
+    init: RequestInit = {},
+  ): Promise<T> => {
+    if (!identityVerified.current) throw new Error("请等待登录状态确认。");
+    try {
+      return await request<T>(path, init);
+    } catch (failure) {
+      if (
+        failure instanceof RequestError &&
+        [401, 403].includes(failure.status)
+      ) {
+        identityVerified.current = false;
+        setIdentityBlocked(true);
+        void checkIdentity();
+      }
+      throw failure;
+    }
+  };
+  const newChat = () => {
+    if (
+      sending ||
+      working ||
+      voice.busy ||
+      realtimeBusy.current ||
+      draftAttachments.preparing ||
+      !identityVerified.current
+    )
+      return;
+    if (selectedChatRef.current === null) {
+      setScreen("chat");
+      setWorkspaceMode("chat");
+      setSidebarOpen(false);
+      return;
+    }
+    if (
+      (draft.trim() || draftAttachments.hasAny() || editingMessage) &&
+      !window.confirm("当前有未发送的内容。放弃草稿和附件，新建聊天？")
+    )
+      return;
+    ++listVersion.current;
+    setScreen("chat");
+    setWorkspaceMode("chat");
+    setSelectedChat(null);
+    selectedChatRef.current = null;
+    voiceReset.current();
+    attachmentReset.current();
+    setActiveChat(null);
+    setSelectedModel(defaultModel.current);
+    setRenameTitle(null);
+    setEditingMessage(null);
+    setDraftBeforeEdit("");
+    setArchiveConfirm(false);
+    setMessages([]);
+    setDraft("");
+    setHasOlderMessages(false);
+    setOlderCursor(null);
+    setSidebarOpen(false);
+    setError("");
+    followMessages.current = true;
+    setFollowLatest(true);
+  };
+  const loadOlder = async () => {
+    const id = selectedChatRef.current;
+    if (!id || !olderCursor || olderLoading || !identityVerified.current)
+      return;
+    const version = listVersion.current;
+    const generation = epoch.current;
+    const host = messagesHost.current;
+    const oldHeight = host?.scrollHeight ?? 0;
+    const oldTop = host?.scrollTop ?? 0;
+    setOlderLoading(true);
+    try {
+      const data = await request<FamilyChatDetail>(
+        `/api/family/chats/${encodeURIComponent(
+          id,
+        )}?before=${encodeURIComponent(olderCursor)}`,
+      );
+      if (version !== listVersion.current || id !== selectedChatRef.current)
+        return;
+      followMessages.current = false;
+      setFollowLatest(false);
+      setMessages((previous) => [
+        ...data.messages.filter(
+          (message) => !previous.some((old) => old.id === message.id),
+        ),
+        ...previous,
+      ]);
+      setHasOlderMessages(data.hasMoreMessages ?? false);
+      setOlderCursor(data.nextBeforeMessageId ?? null);
+      // Layout is read after React commits the prepended page; no jump to bottom.
+      window.requestAnimationFrame(() => {
+        if (
+          generation === epoch.current &&
+          version === listVersion.current &&
+          host === messagesHost.current &&
+          host
+        )
+          host.scrollTop = oldTop + host.scrollHeight - oldHeight;
+      });
+    } finally {
+      if (generation === epoch.current && version === listVersion.current)
+        setOlderLoading(false);
+    }
+  };
+  const loadFiles = useCallback(
+    async (query: string, cursor?: string) => {
+      if (!identityVerified.current) return;
+      const version = ++filesVersion.current;
+      const params = new URLSearchParams();
+      if (query.trim()) params.set("q", query.trim());
+      if (cursor) params.set("cursor", cursor);
+      setFileLoading(true);
+      try {
+        const page = await request<FamilyFilePage>(
+          `/api/family/files${params.toString() ? `?${params}` : ""}`,
+        );
+        if (version !== filesVersion.current || !identityVerified.current)
+          return;
+        setFiles((previous) =>
+          cursor
+            ? [
+                ...previous,
+                ...page.files.filter(
+                  (file) => !previous.some((old) => old.id === file.id),
+                ),
+              ]
+            : page.files,
+        );
+        setFileCursor(page.nextCursor ?? null);
+      } finally {
+        if (version === filesVersion.current) setFileLoading(false);
+      }
+    },
+    [request],
+  );
+  useEffect(() => {
+    if (
+      workspaceMode !== "files" ||
+      !user ||
+      user.status !== "approved" ||
+      checking ||
+      !identityVerified.current
+    )
+      return;
+    filesVersion.current++;
+    const timer = window.setTimeout(
+      () => {
+        void loadFiles(fileSearch).catch((failure) => {
+          if (!(failure instanceof StaleRequest)) {
+            setError(errorText(failure));
+            if (
+              failure instanceof RequestError &&
+              [401, 403].includes(failure.status)
+            )
+              void checkIdentity();
+          }
+        });
+      },
+      fileSearch.trim() ? 250 : 0,
+    );
+    return () => {
+      window.clearTimeout(timer);
+      filesVersion.current++;
+    };
+  }, [workspaceMode, fileSearch, user?.id, checking, loadFiles, checkIdentity]);
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent) => {
+      if (
+        event.isComposing ||
+        composing.current ||
+        event.keyCode === 229 ||
+        !currentUser.current
+      )
+        return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setSidebarCollapsed(false);
+        setSidebarOpen(true);
+        window.requestAnimationFrame(() => {
+          if (currentUser.current && !settingsOpen)
+            searchInput.current?.focus();
+        });
+      } else if (
+        (event.ctrlKey || event.metaKey) &&
+        event.shiftKey &&
+        event.key.toLowerCase() === "o"
+      ) {
+        event.preventDefault();
+        newChat();
+      } else if ((event.ctrlKey || event.metaKey) && event.key === ",") {
+        event.preventDefault();
+        setSettingsOpen(true);
+      } else if (event.key === "Escape") {
+        setSidebarOpen(false);
+      }
+    };
+    window.addEventListener("keydown", keydown);
+    return () => window.removeEventListener("keydown", keydown);
+  });
+
   const siteNotice = status?.notice || FAMILY_NOTICE;
   const inputDisabled = working || logoutFailed || checking;
   const approved = user?.status === "approved";
-  const visibleChats = chats.filter((chat) =>
-    chat.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
+  const visibleChats = [...chats].sort(
+    (a, b) => Number(!!b.pinnedAt) - Number(!!a.pinnedAt),
   );
   const chosenModel = models.find((model) => model.id === selectedModel);
   const attachmentError = attachmentModelError(
@@ -1954,71 +2260,122 @@ export function FamilyApp() {
       className={styles.shell}
       style={appearance.style}
       data-family-theme={appearance.theme.id}
+      data-family-font={preferences.font}
+      data-family-density={preferences.density}
     >
       <div className={styles.app}>
         <aside
           className={`${styles.sidebar} ${
-            sidebarOpen ? styles.sidebarOpen : ""
-          }`}
+            sidebarCollapsed ? styles.sidebarCollapsed : ""
+          } ${sidebarOpen ? styles.sidebarOpen : ""}`}
         >
           <div className={styles.sidebarBrand}>
-            <strong>家人的 AI 小站</strong>
+            <strong className={styles.navLabel}>Family Chat</strong>
             <button
-              className={styles.mobileOnly}
-              aria-label="关闭会话列表"
-              onClick={() => setSidebarOpen(false)}
+              className={styles.iconButton}
+              aria-label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+              title="收起 / 展开侧栏"
+              onClick={() => {
+                setSidebarCollapsed((value) => !value);
+                setSidebarOpen(false);
+              }}
             >
-              关闭
+              <FamilyIcon name="panel" />
             </button>
           </div>
-          <button
-            disabled={
-              sending ||
-              working ||
-              voice.busy ||
-              realtimeBusy.current ||
-              draftAttachments.preparing
-            }
-            onClick={() => {
-              if (selectedChatRef.current === null) {
+          <div className={styles.sidebarTop}>
+            <button
+              className={styles.navButton}
+              disabled={
+                sending ||
+                working ||
+                voice.busy ||
+                realtimeBusy.current ||
+                draftAttachments.preparing
+              }
+              onClick={newChat}
+              aria-label="＋ 新聊天"
+              title="新聊天 · Ctrl/⌘ Shift O"
+            >
+              <FamilyIcon name="plus" />
+              <span className={styles.navLabel}>新聊天</span>
+              <small className={styles.navShortcut}>⌘ ⇧ O</small>
+            </button>
+            <button
+              className={styles.navButton}
+              disabled={voice.busy || realtimeBusy.current}
+              onClick={() => {
+                setSidebarCollapsed(false);
+                searchInput.current?.focus();
+              }}
+              title="搜索聊天 · Ctrl/⌘ K"
+            >
+              <FamilyIcon name="search" />
+              <span className={styles.navLabel}>搜索聊天</span>
+              <small className={styles.navShortcut}>⌘ K</small>
+            </button>
+            <button
+              className={`${styles.navButton} ${
+                workspaceMode === "files" ? styles.activeChat : ""
+              }`}
+              disabled={
+                voice.busy || realtimeBusy.current || sending || working
+              }
+              onClick={() => {
+                setWorkspaceMode("files");
                 setScreen("chat");
                 setSidebarOpen(false);
-                return;
-              }
-              ++listVersion.current;
-              setScreen("chat");
-              setSelectedChat(null);
-              voiceReset.current();
-              attachmentReset.current();
-              selectedChatRef.current = null;
-              setActiveChat(null);
-              setSelectedModel(defaultModel.current);
-              setRenameTitle(null);
-              setEditingMessage(null);
-              setDraftBeforeEdit("");
-              setArchiveConfirm(false);
-              setMessages([]);
-              setDraft("");
-              setSidebarOpen(false);
-              setError("");
-            }}
-          >
-            ＋ 新聊天
-          </button>
+              }}
+              title="我的文件"
+            >
+              <FamilyIcon name="file" />
+              <span className={styles.navLabel}>我的文件</span>
+            </button>
+          </div>
           <label className={styles.searchField}>
             <span className={styles.srOnly}>搜索聊天</span>
             <input
+              ref={searchInput}
               type="search"
               value={search}
               disabled={voice.busy || realtimeBusy.current}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="搜索聊天标题"
+              placeholder="搜索标题和聊天内容"
             />
           </label>
-          <nav className={styles.chatList} aria-label="我的聊天">
-            {visibleChats.length === 0 ? (
+          <div className={styles.listHeading}>
+            <span className={styles.navLabel}>
+              {search ? "搜索结果" : archivedView ? "已归档" : "最近聊天"}
+            </span>
+            <button
+              className={styles.iconButton}
+              title={archivedView ? "查看最近聊天" : "查看归档"}
+              aria-label={archivedView ? "查看最近聊天" : "查看归档"}
+              disabled={listLoading || voice.busy || realtimeBusy.current}
+              onClick={() => setArchivedView((value) => !value)}
+            >
+              <FamilyIcon
+                name={archivedView ? "message" : "archive"}
+                size={16}
+              />
+            </button>
+          </div>
+          <nav
+            className={styles.chatList}
+            aria-label="我的聊天"
+            aria-busy={listLoading}
+          >
+            {!visibleChats.length ? (
               <div className={styles.muted}>
-                <p>{search ? "没有匹配的聊天。" : "聊天会保存到你的账户。"}</p>
+                <p>
+                  {listLoading
+                    ? "正在搜索…"
+                    : search
+                    ? "没有匹配的聊天。"
+                    : archivedView
+                    ? "暂无归档聊天。"
+                    : "聊天会保存到你的账户。"}
+                </p>
                 {search ? (
                   <button
                     className={styles.textButton}
@@ -2029,45 +2386,95 @@ export function FamilyApp() {
                 ) : null}
               </div>
             ) : (
-              visibleChats.map((chat) => (
-                <button
-                  key={chat.id}
-                  className={
-                    selectedChat === chat.id && screen === "chat"
-                      ? styles.activeChat
-                      : ""
-                  }
-                  disabled={
-                    sending ||
-                    working ||
-                    voice.busy ||
-                    realtimeBusy.current ||
-                    draftAttachments.preparing
-                  }
-                  onClick={() => {
-                    setScreen("chat");
-                    void run(() => selectChat(chat.id));
-                  }}
-                >
-                  <span>{chat.title || "新聊天"}</span>
-                  <small>
-                    {new Date(chat.updatedAt).toLocaleDateString("zh-CN")}
-                  </small>
-                </button>
+              visibleChats.map((chat, index) => (
+                <div className={styles.chatRow} key={chat.id}>
+                  {chat.pinnedAt && !visibleChats[index - 1]?.pinnedAt ? (
+                    <small className={styles.listHeading}>已置顶</small>
+                  ) : !chat.pinnedAt && visibleChats[index - 1]?.pinnedAt ? (
+                    <small className={styles.listHeading}>其他聊天</small>
+                  ) : null}
+                  <button
+                    className={`${styles.chatRowMain} ${
+                      selectedChat === chat.id &&
+                      screen === "chat" &&
+                      workspaceMode === "chat"
+                        ? styles.activeChat
+                        : ""
+                    }`}
+                    disabled={
+                      sending ||
+                      working ||
+                      voice.busy ||
+                      realtimeBusy.current ||
+                      draftAttachments.preparing
+                    }
+                    title={chat.title || "新聊天"}
+                    onClick={() => {
+                      if (chat.archived) {
+                        void run(async () => {
+                          await request(
+                            `/api/family/chats/${encodeURIComponent(chat.id)}`,
+                            {
+                              method: "PATCH",
+                              body: JSON.stringify({ archived: false }),
+                            },
+                          );
+                          await loadChats();
+                          setNotice("聊天已恢复，可在最近聊天中打开。");
+                        });
+                      } else {
+                        setScreen("chat");
+                        void run(() => selectChat(chat.id));
+                      }
+                    }}
+                  >
+                    <span>
+                      {chat.pinnedAt ? "⌁ " : ""}
+                      {chat.title || "新聊天"}
+                    </span>
+                    {chat.matchSnippet ? (
+                      <small className={styles.chatSnippet}>
+                        {chat.matchSnippet}
+                      </small>
+                    ) : (
+                      <small>
+                        {chat.archived ? "点击恢复 · " : ""}
+                        {new Date(chat.updatedAt).toLocaleDateString("zh-CN")}
+                      </small>
+                    )}
+                  </button>
+                </div>
               ))
             )}
+            {nextChatCursor ? (
+              <button
+                disabled={listLoading || checking}
+                className={styles.textButton}
+                onClick={() => void run(() => loadChats(nextChatCursor))}
+              >
+                {listLoading ? "正在加载…" : "加载更多聊天"}
+              </button>
+            ) : null}
           </nav>
           <div className={styles.account}>
-            <strong>{user.name}</strong>
-            <span>{user.email}</span>
-            {expiresAt ? (
-              <small>
-                登录有效至 {new Date(expiresAt).toLocaleDateString("zh-CN")}
-              </small>
-            ) : null}
+            <button
+              className={styles.settingsLauncher}
+              aria-label="打开设置"
+              title="设置 · Ctrl/⌘ ,"
+              onClick={() => setSettingsOpen(true)}
+            >
+              <span className={styles.userBadge}>
+                {user.name.slice(0, 1).toUpperCase()}
+              </span>
+              <span className={styles.navLabel}>
+                <strong>{user.name}</strong>
+                <small>设置与账户</small>
+              </span>
+              <FamilyIcon name="settings" />
+            </button>
             {user.role === "admin" ? (
               <button
-                className={styles.secondary}
+                className={`${styles.secondary} ${styles.navLabel}`}
                 disabled={
                   sending ||
                   working ||
@@ -2080,7 +2487,10 @@ export function FamilyApp() {
                 账户与用量管理
               </button>
             ) : null}
-            <button className={styles.secondary} onClick={() => void logout()}>
+            <button
+              className={`${styles.textButton} ${styles.navLabel}`}
+              onClick={() => void logout()}
+            >
               退出登录
             </button>
           </div>
@@ -2102,18 +2512,25 @@ export function FamilyApp() {
             >
               会话
             </button>
-            <div>
+            <div className={styles.headerTitle}>
               <h1>
                 {screen === "admin"
                   ? "账户与用量管理"
-                  : chats.find((chat) => chat.id === selectedChat)?.title ||
+                  : workspaceMode === "files"
+                  ? "我的文件"
+                  : activeChat?.title ||
+                    chats.find((chat) => chat.id === selectedChat)?.title ||
                     "新聊天"}
               </h1>
             </div>
-            <ThemeSettings
-              theme={appearance.theme}
-              onChange={appearance.setTheme}
-            />
+            <button
+              className={styles.iconButton}
+              aria-label="设置"
+              title="设置"
+              onClick={() => setSettingsOpen(true)}
+            >
+              <FamilyIcon name="settings" />
+            </button>
             {user.role === "admin" && screen !== "admin" ? (
               <button
                 disabled={
@@ -2137,11 +2554,17 @@ export function FamilyApp() {
               </button>
             ) : null}
           </header>
-          {screen === "chat" ? <RealtimePanel controller={realtime} /> : null}
+          {screen === "chat" ? (
+            <RealtimePanel controller={realtime} embedded />
+          ) : null}
           {screen === "chat" ? (
             <div
               className={styles.chatToolbar}
-              style={realtime.busy ? { display: "none" } : undefined}
+              style={
+                realtime.busy || workspaceMode === "files"
+                  ? { display: "none" }
+                  : undefined
+              }
             >
               {/* The retained editor below is hidden during a call, so mobile
                   voice controls can use the remaining viewport without loss. */}
@@ -2181,11 +2604,7 @@ export function FamilyApp() {
                   ))}
                 </select>
               </label>
-              {chosenModel ? (
-                <small className={styles.modelDescription}>
-                  {chosenModel.description}
-                </small>
-              ) : null}
+
               {modelError ? (
                 <div className={styles.modelError} role="alert">
                   {modelError}
@@ -2198,65 +2617,249 @@ export function FamilyApp() {
                   </button>
                 </div>
               ) : null}
-              <div className={styles.chatTools}>
-                <button
-                  className={styles.secondary}
-                  disabled={turnLocked || !activeChat}
-                  onClick={() =>
-                    setRenameTitle(
-                      chats.find((chat) => chat.id === selectedChat)?.title ??
-                        activeChat?.title ??
-                        "",
-                    )
-                  }
-                >
-                  重命名
-                </button>
-                <button
-                  className={styles.secondary}
-                  disabled={turnLocked || !activeChat}
-                  onClick={() => void run(exportChat)}
-                >
-                  导出 Markdown
-                </button>
-                <button
-                  className={styles.secondary}
-                  disabled={
-                    sending ||
-                    working ||
-                    cancelPending ||
-                    voice.busy ||
-                    realtimeBusy.current
-                  }
-                  onClick={() =>
-                    void run(async () => {
-                      await loadChats();
-                      if (selectedChat) {
-                        const detail = await request<FamilyChatDetail>(
+              <details className={styles.conversationMenu}>
+                <summary aria-label="对话操作" title="对话操作">
+                  <FamilyIcon name="dots" />
+                </summary>
+                <div className={`${styles.chatTools} ${styles.menuPanel}`}>
+                  <button
+                    className={styles.secondary}
+                    disabled={turnLocked || !activeChat}
+                    onClick={() =>
+                      void run(async () => {
+                        const response = await request<{ chat: FamilyChat }>(
                           `/api/family/chats/${encodeURIComponent(
-                            selectedChat,
+                            activeChat!.id,
                           )}`,
+                          {
+                            method: "PATCH",
+                            body: JSON.stringify({
+                              pinned: !activeChat!.pinnedAt,
+                            }),
+                          },
                         );
-                        setMessages(detail.messages);
-                        acceptChat(detail.chat);
-                        setSelectedModel(
-                          detail.chat.model || defaultModel.current,
-                        );
+                        acceptChat(response.chat);
+                        await loadChats();
+                      })
+                    }
+                  >
+                    {activeChat?.pinnedAt ? "取消置顶" : "置顶对话"}
+                  </button>
+                  <button
+                    className={styles.secondary}
+                    disabled={turnLocked || !activeChat}
+                    onClick={() =>
+                      setRenameTitle(
+                        chats.find((chat) => chat.id === selectedChat)?.title ??
+                          activeChat?.title ??
+                          "",
+                      )
+                    }
+                  >
+                    重命名
+                  </button>
+                  <button
+                    className={styles.secondary}
+                    disabled={turnLocked || !activeChat}
+                    onClick={() => void run(exportChat)}
+                  >
+                    导出 Markdown
+                  </button>
+                  <button
+                    className={styles.secondary}
+                    disabled={
+                      sending ||
+                      working ||
+                      cancelPending ||
+                      voice.busy ||
+                      realtimeBusy.current
+                    }
+                    onClick={() =>
+                      void run(async () => {
+                        await loadChats();
+                        if (selectedChat) {
+                          const detail = await request<FamilyChatDetail>(
+                            `/api/family/chats/${encodeURIComponent(
+                              selectedChat,
+                            )}`,
+                          );
+                          setMessages(detail.messages);
+                          setHasOlderMessages(detail.hasMoreMessages ?? false);
+                          setOlderCursor(detail.nextBeforeMessageId ?? null);
+                          acceptChat(detail.chat);
+                          setSelectedModel(
+                            detail.chat.model || defaultModel.current,
+                          );
+                        }
+                      })
+                    }
+                  >
+                    刷新
+                  </button>
+                  <button
+                    className={styles.secondary}
+                    disabled={turnLocked || !activeChat}
+                    onClick={() => setArchiveConfirm(true)}
+                  >
+                    归档对话
+                  </button>
+                </div>
+              </details>
+            </div>
+          ) : null}
+          <FamilySettings
+            open={settingsOpen}
+            onClose={() => setSettingsOpen(false)}
+            user={user}
+            expiresAt={expiresAt}
+            theme={appearance.theme}
+            onThemeChange={appearance.setTheme}
+            preferences={preferences}
+            onPreferencesChange={setPreferences}
+            voice={realtime.voice}
+            onVoiceChange={realtime.setVoice}
+            vad={realtime.vad}
+            onVadChange={realtime.setVad}
+            voiceBusy={realtime.busy || voice.busy}
+            autoReadVoice={autoReadVoice}
+            onAutoReadVoiceChange={setAutoReadVoice}
+            tapRecord={tapRecord}
+            onTapRecordChange={setTapRecord}
+            locked={checking || working || !identityVerified.current}
+            onSaveProfile={async (name) => {
+              if (!identityVerified.current)
+                throw new Error("请等待登录状态确认。");
+              const me = await workspaceRequest<FamilyMe>("/api/family/me", {
+                method: "PATCH",
+                body: JSON.stringify({ name }),
+              });
+              const previous = currentUser.current;
+              if (
+                !previous ||
+                me.user.id !== previous.id ||
+                me.user.role !== previous.role ||
+                me.user.status !== "approved"
+              ) {
+                clearPrivate();
+                setScreen("loading");
+                void checkIdentity();
+                throw new StaleRequest();
+              }
+              currentUser.current = me.user;
+              setUser(me.user);
+              setExpiresAt(me.sessionExpiresAt);
+              return me;
+            }}
+            onLoadSessions={() =>
+              workspaceRequest<{ sessions: FamilySessionSummary[] }>(
+                "/api/family/me/sessions",
+              )
+            }
+            onRevokeSession={async (id) => {
+              if (!identityVerified.current) throw new StaleRequest();
+              await workspaceRequest(
+                `/api/family/me/sessions/${encodeURIComponent(id)}`,
+                { method: "DELETE" },
+              );
+            }}
+            onRevokeOthers={async () => {
+              if (!identityVerified.current) throw new StaleRequest();
+              await workspaceRequest("/api/family/me/sessions/revoke-others", {
+                method: "POST",
+                body: "{}",
+              });
+            }}
+            onLogout={() => void logout()}
+          />
+          {screen === "chat" && workspaceMode === "files" ? (
+            <section className={styles.filePanel} aria-label="我的文件库">
+              <h2>我的文件</h2>
+              <p className={styles.muted}>
+                整理你在聊天中发送的文件，点击可预览或下载。
+              </p>
+              <label className={styles.fileSearch}>
+                <span className={styles.srOnly}>搜索文件</span>
+                <input
+                  type="search"
+                  value={fileSearch}
+                  placeholder="搜索文件名"
+                  onChange={(event) => setFileSearch(event.target.value)}
+                />
+              </label>
+              {fileLoading && !files.length ? (
+                <p role="status">正在加载文件…</p>
+              ) : !files.length ? (
+                <p className={styles.muted}>
+                  {fileSearch
+                    ? "没有匹配的文件。"
+                    : "发送过的附件会显示在这里。"}
+                </p>
+              ) : (
+                files.map((file) => (
+                  <article key={file.id} className={styles.fileRow}>
+                    <div className={styles.fileMeta}>
+                      <FamilyIcon name="file" />
+                      <strong>{file.name}</strong>
+                      <small>
+                        {attachmentSize(file.byteSize)} ·{" "}
+                        {new Date(file.createdAt).toLocaleDateString("zh-CN")}
+                      </small>
+                    </div>
+                    <button
+                      className={styles.textButton}
+                      disabled={turnLocked || checking}
+                      onClick={() =>
+                        void run(async () => {
+                          if (file.chatArchived) {
+                            await request(
+                              `/api/family/chats/${encodeURIComponent(
+                                file.chatId,
+                              )}`,
+                              {
+                                method: "PATCH",
+                                body: JSON.stringify({ archived: false }),
+                              },
+                            );
+                            await loadFiles(fileSearch);
+                            await loadChats();
+                          }
+                          await selectChat(file.chatId);
+                        })
                       }
-                    })
+                    >
+                      {file.chatArchived ? "恢复并打开聊天" : "打开聊天"} ·{" "}
+                      {file.chatTitle || "新聊天"}
+                    </button>
+                    {!file.chatArchived ? (
+                      <MessageAttachments
+                        attachments={[file]}
+                        scope={{
+                          readable: identityVerified.current,
+                          key: `${attachmentEpoch}:${attachmentOwner}:files:${file.id}`,
+                          isCurrent: () =>
+                            attachmentEpoch === epoch.current &&
+                            attachmentOwner === currentUser.current?.id &&
+                            identityVerified.current,
+                        }}
+                        onUnauthorized={() => void checkIdentity()}
+                      />
+                    ) : (
+                      <small className={styles.muted}>恢复聊天后可下载。</small>
+                    )}
+                  </article>
+                ))
+              )}
+              {fileCursor ? (
+                <button
+                  disabled={fileLoading || checking}
+                  onClick={() =>
+                    void run(() => loadFiles(fileSearch, fileCursor))
                   }
                 >
-                  刷新
+                  {fileLoading ? "正在加载…" : "加载更多文件"}
                 </button>
-                <button
-                  className={styles.secondary}
-                  disabled={turnLocked || !activeChat}
-                  onClick={() => setArchiveConfirm(true)}
-                >
-                  归档对话
-                </button>
-              </div>
-            </div>
+              ) : null}
+            </section>
           ) : null}
           {error ? (
             <div className={styles.bannerError} role="alert">
@@ -2327,7 +2930,12 @@ export function FamilyApp() {
           ) : null}
           {screen === "chat" && selectedChat && archiveConfirm ? (
             <div className={styles.archivePrompt}>
-              <p>归档后从你的列表隐藏。</p>
+              <p>
+                归档后从你的列表隐藏，可在归档中恢复。
+                {draft.trim() || draftAttachments.hasAny()
+                  ? "归档也会放弃未发送的草稿和附件。"
+                  : ""}
+              </p>
               <div>
                 <button
                   disabled={working || sending}
@@ -2615,6 +3223,40 @@ export function FamilyApp() {
                           <span className={styles.badge}>已归档</span>
                         ) : null}
                       </h3>
+                      {adminDetail.hasMoreMessages &&
+                      adminDetail.nextBeforeMessageId ? (
+                        <button
+                          disabled={working || checking}
+                          className={styles.historyLoad}
+                          onClick={() =>
+                            void run(async () => {
+                              const version = adminVersion.current;
+                              const id = adminDetail.chat.id;
+                              const data = await request<FamilyChatDetail>(
+                                `/api/family/admin/chats/${encodeURIComponent(
+                                  id,
+                                )}?before=${encodeURIComponent(
+                                  adminDetail.nextBeforeMessageId!,
+                                )}`,
+                              );
+                              if (version === adminVersion.current)
+                                setAdminDetail((previous) =>
+                                  previous?.chat.id === id
+                                    ? {
+                                        ...data,
+                                        messages: [
+                                          ...data.messages,
+                                          ...previous.messages,
+                                        ],
+                                      }
+                                    : previous,
+                                );
+                            })
+                          }
+                        >
+                          加载更早消息
+                        </button>
+                      ) : null}
                       {adminDetail.messages.length ? (
                         adminDetail.messages.map((message) => (
                           <MessageBody
@@ -2642,11 +3284,35 @@ export function FamilyApp() {
           ) : (
             <>
               <div
+                ref={messagesHost}
                 className={styles.messages}
-                style={realtime.busy ? { display: "none" } : undefined}
+                onScroll={(event) => {
+                  const host = event.currentTarget;
+                  const follow =
+                    host.scrollHeight - host.scrollTop - host.clientHeight <
+                    120;
+                  followMessages.current = follow;
+                  setFollowLatest(follow);
+                }}
+                style={
+                  realtime.busy || workspaceMode === "files"
+                    ? { display: "none" }
+                    : undefined
+                }
                 aria-label="聊天记录"
                 aria-busy={sending}
               >
+                {hasOlderMessages ? (
+                  <button
+                    className={styles.historyLoad}
+                    disabled={
+                      olderLoading || detailLoading || checking || sending
+                    }
+                    onClick={() => void run(loadOlder)}
+                  >
+                    {olderLoading ? "正在加载…" : "加载更早消息"}
+                  </button>
+                ) : null}
                 {detailLoading ? (
                   <p className={styles.muted} role="status">
                     正在加载聊天…
@@ -2654,7 +3320,7 @@ export function FamilyApp() {
                 ) : selectedChat && !activeChat ? (
                   <div className={styles.welcome}>
                     <h2>聊天暂时没有加载成功</h2>
-                    <p>请点上方“刷新”重试。</p>
+                    <p>请点上方“刷新”或重新选择此聊天重试。</p>
                   </div>
                 ) : messages.length ? (
                   messages
@@ -2720,18 +3386,60 @@ export function FamilyApp() {
                       </div>
                     ))
                 ) : (
-                  <div className={styles.welcome}>
-                    <span className={styles.welcomeIcon}>聊</span>
-                    <h2>想聊点什么？</h2>
-                    <p>问问题、理思路，或者分享今天的新鲜事。</p>
-                    <p className={styles.muted}>聊天保存在你的账户中。</p>
+                  <div className={styles.emptyHero}>
+                    <span className={styles.emptyMark}>
+                      <FamilyIcon name="message" size={32} />
+                    </span>
+                    <h2>今天有什么想聊的？</h2>
+                    <p>把问题、灵感或一份文件带过来。</p>
+                    <div className={styles.suggestions}>
+                      {[
+                        "帮我梳理一个想法",
+                        "解释一个我不懂的概念",
+                        "一起安排这周的生活",
+                        "润色一段想说的话",
+                      ].map((text) => (
+                        <button
+                          key={text}
+                          type="button"
+                          className={styles.suggestion}
+                          disabled={turnLocked || checking}
+                          onClick={() => {
+                            setDraft(text);
+                            composerInput.current?.focus();
+                          }}
+                        >
+                          {text}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
                 <div ref={bottom} />
               </div>
+              {!followLatest &&
+              messages.length &&
+              workspaceMode === "chat" &&
+              !realtime.busy ? (
+                <button
+                  className={styles.scrollLatest}
+                  onClick={() => {
+                    followMessages.current = true;
+                    setFollowLatest(true);
+                    bottom.current?.scrollIntoView({ block: "end" });
+                  }}
+                >
+                  <FamilyIcon name="arrowDown" size={16} />
+                  回到最新消息
+                </button>
+              ) : null}
               <form
                 className={styles.composer}
-                style={realtime.busy ? { display: "none" } : undefined}
+                style={
+                  realtime.busy || workspaceMode === "files"
+                    ? { display: "none" }
+                    : undefined
+                }
                 onSubmit={(event) => {
                   event.preventDefault();
                   void generateMessage(
@@ -2890,6 +3598,9 @@ export function FamilyApp() {
                     if (
                       event.key === "Enter" &&
                       !event.shiftKey &&
+                      (preferences.sendKey === "enter" ||
+                        event.ctrlKey ||
+                        event.metaKey) &&
                       !event.nativeEvent.isComposing &&
                       !composing.current &&
                       event.keyCode !== 229
@@ -3022,24 +3733,39 @@ export function FamilyApp() {
                   </button>
                   <button
                     type="button"
-                    className={styles.textButton}
-                    disabled={voice.busy || realtimeBusy.current}
-                    onClick={() => setTapRecord((value) => !value)}
+                    className={styles.secondary}
+                    aria-label="开始连续语音"
+                    title={
+                      realtime.supported
+                        ? "实时语音对话"
+                        : "此浏览器暂不支持连续语音"
+                    }
+                    disabled={
+                      !realtime.supported ||
+                      voice.busy ||
+                      sending ||
+                      working ||
+                      checking ||
+                      detailLoading ||
+                      !!editingMessage ||
+                      draftAttachments.preparing ||
+                      cancelPending ||
+                      !identityVerified.current
+                    }
+                    onClick={() => void realtime.start()}
                   >
-                    {tapRecord ? "切换为按住说话" : "点击录音模式"}
+                    <FamilyIcon name="voice" /> 连续语音
                   </button>
-                  <label className={styles.voiceOption}>
-                    <input
-                      type="checkbox"
-                      checked={autoReadVoice}
-                      onChange={(event) =>
-                        setAutoReadVoice(event.target.checked)
-                      }
-                    />
-                    语音提问后自动朗读 AI 回复
-                  </label>
+                  <button
+                    type="button"
+                    className={styles.iconButton}
+                    aria-label="语音设置"
+                    onClick={() => setSettingsOpen(true)}
+                  >
+                    <FamilyIcon name="settings" size={16} />
+                  </button>
                 </div>
-                <p id="family-voice-help" className={styles.voiceHelp}>
+                <p id="family-voice-help" className={styles.srOnly}>
                   {draft.trim() || draftAttachments.hasAny()
                     ? "有未发送的文字或附件，请先发送或清空后再录音。"
                     : !voice.supported
@@ -3048,9 +3774,10 @@ export function FamilyApp() {
                 </p>
                 <div className={styles.composerActions}>
                   <small>
-                    Enter 发送 · Shift+Enter 换行
-                    <br />
-                    AI 回答可能有误
+                    {preferences.sendKey === "enter"
+                      ? "Enter 发送 · Shift+Enter 换行"
+                      : "Ctrl/⌘ Enter 发送 · Enter 换行"}{" "}
+                    · AI 回答可能有误
                   </small>
                   {sending || cancelPending ? (
                     <button
@@ -3068,6 +3795,9 @@ export function FamilyApp() {
                   ) : (
                     <button
                       type="submit"
+                      className={styles.sendButton}
+                      aria-label={editingMessage ? "保存并重新回复" : "发送 ↑"}
+                      title={editingMessage ? "保存并重新回复" : "发送消息"}
                       disabled={
                         (!draft.trim() &&
                           (!!editingMessage || !draftAttachments.hasAny())) ||
@@ -3086,7 +3816,7 @@ export function FamilyApp() {
                         realtimeBusy.current
                       }
                     >
-                      {editingMessage ? "保存并重新回复" : "发送 ↑"}
+                      <FamilyIcon name="arrowUp" size={20} />
                     </button>
                   )}
                 </div>

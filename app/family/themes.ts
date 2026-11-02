@@ -1,5 +1,7 @@
 /** Pure presentation metadata. Apply variables to a family surface, never :root. */
 export const FAMILY_THEME_IDS = [
+  "paper",
+  "graphite",
   "cream",
   "ocean",
   "lilac",
@@ -8,7 +10,7 @@ export const FAMILY_THEME_IDS = [
   "forest",
 ] as const;
 export type FamilyThemeId = (typeof FAMILY_THEME_IDS)[number];
-export const DEFAULT_FAMILY_THEME: FamilyThemeId = "cream";
+export const DEFAULT_FAMILY_THEME: FamilyThemeId = "paper";
 
 // The original palette is explicit so the default retains every existing shade.
 const CREAM_VARIABLES = {
@@ -188,6 +190,76 @@ function theme(
 }
 
 export const FAMILY_THEMES: readonly FamilyTheme[] = Object.freeze([
+  theme(
+    "paper",
+    "纸白",
+    "简洁白色，专注内容",
+    false,
+    paletteVariables({
+      ink: "#242424",
+      muted: "#6b6b6b",
+      paper: "#ffffff",
+      page: "#ffffff",
+      line: "#e9e9e7",
+      accent: "#242424",
+      accentHover: "#424242",
+      onAccent: "#ffffff",
+      inputLine: "#d8d8d5",
+      focus: "#7f7f7a",
+      border: "#e2e2df",
+      borderStrong: "#cececa",
+      hover: "#eaeae7",
+      panel: "#f7f7f5",
+      sidebar: "#f4f4f1",
+      soft: "#f0f0ed",
+      user: "#f1f1ee",
+      code: "#f5f5f3",
+      warning: "#8a642e",
+      shadow: "#0000000b",
+      backdrop: "#00000055",
+      errorBg: "#fff0ed",
+      errorText: "#a2372d",
+      errorBorder: "#ecc9c2",
+      errorHover: "#f9dfd9",
+      successBg: "#eef5ed",
+      successText: "#386a3d",
+    }),
+  ),
+  theme(
+    "graphite",
+    "石墨",
+    "中性深色，安静工作区",
+    true,
+    paletteVariables({
+      ink: "#ececea",
+      muted: "#a3a3a0",
+      paper: "#202020",
+      page: "#202020",
+      line: "#353533",
+      accent: "#ececea",
+      accentHover: "#ffffff",
+      onAccent: "#202020",
+      inputLine: "#494947",
+      focus: "#9b9b96",
+      border: "#3e3e3b",
+      borderStrong: "#555550",
+      hover: "#343432",
+      panel: "#292928",
+      sidebar: "#191919",
+      soft: "#30302e",
+      user: "#30302e",
+      code: "#181818",
+      warning: "#d9bb87",
+      shadow: "#00000033",
+      backdrop: "#00000099",
+      errorBg: "#422a28",
+      errorText: "#efb6ac",
+      errorBorder: "#744943",
+      errorHover: "#503430",
+      successBg: "#293d2e",
+      successText: "#afd0b0",
+    }),
+  ),
   theme("cream", "奶油绿", "温暖纸色，柔和绿调", false, CREAM_VARIABLES),
   theme(
     "ocean",

@@ -1215,3 +1215,946 @@
     transition: none;
   }
 }
+/* Workspace surfaces. Existing admin/auth classes above remain compatible. */
+.shell {
+  font-size: 14px;
+  line-height: 1.55;
+  --workspace-message-size: 15px;
+  --workspace-thread-gap: 28px;
+  &[data-family-font="small"] {
+    --workspace-message-size: 14px;
+  }
+  &[data-family-font="large"] {
+    --workspace-message-size: 18px;
+  }
+  &[data-family-density="compact"] {
+    --workspace-thread-gap: 14px;
+  }
+  button {
+    min-height: 36px;
+    border-radius: 8px;
+    padding: 7px 12px;
+    font-weight: 500;
+  }
+  button,
+  input,
+  textarea,
+  select {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+.app {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.sidebar {
+  width: 232px;
+  padding: 12px 10px;
+  gap: 7px;
+  overflow: hidden;
+  background: var(--sidebar-bg);
+  border-right-color: var(--line);
+}
+.sidebarTop,
+.sidebarBrand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 3px;
+  min-height: 36px;
+}
+.sidebarBrand {
+  font-size: 14px;
+  font-weight: 600;
+}
+.brandMark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 29px;
+  height: 29px;
+  border-radius: 9px;
+  color: var(--ink);
+  font-size: 19px;
+  flex-shrink: 0;
+}
+.shell .iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  width: 36px;
+  height: 36px;
+  padding: 7px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.shell .iconButton:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--ink);
+}
+.shell .navButton {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  background: transparent;
+  color: var(--ink);
+  padding: 8px 10px;
+  min-height: 38px;
+  border: 0;
+}
+.shell .navButton:hover:not(:disabled),
+.shell .navButton[aria-current="page"],
+.shell .navButton[aria-pressed="true"] {
+  background: var(--hover);
+}
+.navLabel {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.navShortcut {
+  color: var(--muted);
+  opacity: 0.7;
+  font-size: 10px;
+  font-weight: 400;
+}
+.listHeading {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  padding: 18px 10px 6px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.chatList {
+  gap: 2px;
+  flex: 1;
+  min-height: 0;
+  overscroll-behavior: contain;
+  margin-top: 2px;
+  padding-bottom: 8px;
+}
+.chatList button {
+  border: 0;
+  font-size: 13px;
+  padding: 8px 10px;
+  min-height: 36px;
+  border-radius: 7px;
+}
+.chatList button small {
+  font-size: 10px;
+  opacity: 0.7;
+}
+.shell .activeChat {
+  background: var(--hover);
+  border: 0;
+}
+.chatRow {
+  display: flex;
+  position: relative;
+  align-items: center;
+  gap: 0;
+  min-width: 0;
+  border-radius: 7px;
+}
+.chatRow:hover {
+  background: var(--chat-hover);
+}
+.chatRowMain {
+  flex: 1;
+  min-width: 0;
+}
+.chatRow .chatRowMain {
+  background: transparent;
+  padding-right: 6px;
+}
+.chatRowActions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  padding-right: 2px;
+}
+.chatRowActions button {
+  min-width: 28px !important;
+  width: 28px !important;
+  min-height: 30px;
+  height: 30px;
+  padding: 4px !important;
+}
+.chatSnippet {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  font-weight: 400;
+  margin-top: 3px;
+}
+.account {
+  margin-top: auto;
+  padding: 10px 0 0;
+  gap: 4px;
+  font-size: 12px;
+}
+.account > span {
+  padding-inline: 10px;
+  font-size: 11px;
+}
+.shell .settingsLauncher {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  background: transparent;
+  color: var(--ink);
+  border: 0;
+  padding: 8px;
+  gap: 10px;
+  text-align: left;
+}
+.shell .settingsLauncher:hover {
+  background: var(--hover);
+}
+.settingsLauncher > div {
+  flex: 1;
+  min-width: 0;
+}
+.settingsLauncher strong {
+  display: block;
+  font-weight: 500;
+  font-size: 12px;
+}
+.settingsLauncher small {
+  display: block;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.userBadge {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line);
+  background: var(--soft-bg);
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.sidebarCollapsed {
+  width: 60px;
+  padding-inline: 7px;
+}
+.sidebarCollapsed .sidebarBrand,
+.sidebarCollapsed .navLabel,
+.sidebarCollapsed .navShortcut,
+.sidebarCollapsed .searchField,
+.sidebarCollapsed .listHeading,
+.sidebarCollapsed .chatList,
+.sidebarCollapsed .account > span,
+.sidebarCollapsed .settingsLauncher > div,
+.sidebarCollapsed .settingsLauncher > svg {
+  display: none;
+}
+.sidebarCollapsed .sidebarTop {
+  justify-content: center;
+  padding: 0;
+}
+.sidebarCollapsed .navButton {
+  justify-content: center;
+  padding-inline: 9px;
+}
+.sidebarCollapsed .settingsLauncher {
+  justify-content: center;
+  padding-inline: 0;
+}
+.header {
+  min-height: 56px;
+  height: 56px;
+  padding: 8px 20px;
+  gap: 10px;
+  border-bottom: 0;
+}
+.headerTitle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.headerTitle h1 {
+  font-size: 14px;
+  font-weight: 500;
+}
+.header h1 {
+  font-size: 14px;
+  font-weight: 500;
+}
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+.header > div.headerActions {
+  flex: 0 0 auto;
+}
+.chatToolbar {
+  padding: 0 20px 8px;
+  border: 0;
+  gap: 8px;
+}
+.modelPicker {
+  flex: 0 1 220px;
+  min-width: 0;
+  font-size: 12px;
+  gap: 5px;
+}
+.shell .modelPicker select {
+  font-size: 12px;
+  min-height: 34px;
+  padding: 6px 8px;
+  border-color: transparent;
+  background: transparent;
+  border-radius: 7px;
+}
+.shell .modelPicker select:hover {
+  background: var(--hover);
+}
+.modelDescription {
+  font-size: 11px;
+}
+.searchField {
+  position: relative;
+  margin-top: 5px;
+}
+.shell .searchField input {
+  font-size: 12px;
+  border-radius: 8px;
+  padding: 9px 10px;
+  min-height: 36px;
+  background: transparent;
+  border-color: var(--line);
+}
+.conversationMenu {
+  position: relative;
+}
+.menuPanel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  width: 200px;
+  z-index: 20;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 5px;
+  box-shadow: 0 8px 30px var(--app-shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.shell .menuPanel button {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  text-align: left;
+  color: var(--ink);
+  background: transparent;
+  width: 100%;
+  min-height: 36px;
+  font-size: 12px;
+  padding: 8px 10px;
+}
+.shell .menuPanel button:hover {
+  background: var(--hover);
+}
+.messages {
+  padding: 24px max(24px, calc((100% - 800px) / 2)) 20px;
+  scroll-padding-block: 24px;
+  position: relative;
+}
+.message {
+  border: 0;
+  background: transparent;
+  padding: 8px 0;
+  border-radius: 0;
+  margin: 0 0 var(--workspace-thread-gap);
+  line-height: 1.75;
+}
+.userMessage {
+  margin-left: min(12%, 90px);
+  background: var(--user-bg);
+  border-radius: 16px;
+  padding: 14px 18px;
+  border: 1px solid transparent;
+}
+.messageMeta {
+  font-size: 10px;
+  margin-bottom: 8px;
+  gap: 12px;
+}
+.messageMeta strong {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+.messageFoot {
+  font-size: 10px;
+  margin-top: 10px;
+  opacity: 0.8;
+}
+.markdown {
+  font-size: var(--workspace-message-size);
+  line-height: 1.8;
+}
+.shell .copyButton {
+  min-height: 30px;
+  min-width: 30px;
+  margin-top: 8px;
+  font-size: 10px;
+  opacity: 0.7;
+}
+.turnActions {
+  margin-top: -16px;
+}
+.turnActions button {
+  min-height: 30px;
+  font-size: 11px;
+}
+.emptyHero,
+.welcome {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  min-height: 100%;
+  gap: 12px;
+  text-align: center;
+  padding: 20px 12px 70px;
+}
+.emptyHero h2,
+.welcome h2 {
+  font-size: clamp(24px, 3vw, 32px);
+  letter-spacing: -0.03em;
+  font-weight: 500;
+  line-height: 1.4;
+}
+.emptyHero > p {
+  color: var(--muted);
+  font-size: 13px;
+}
+.emptyMark,
+.welcomeIcon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  color: var(--ink);
+  background: var(--soft-bg);
+  margin-bottom: 5px;
+}
+.suggestions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  width: min(520px, 100%);
+  margin-top: 20px;
+}
+.shell .suggestion {
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 70px;
+  padding: 12px 14px;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  font-size: 12px;
+}
+.shell .suggestion:hover {
+  background: var(--hover);
+}
+.suggestion small {
+  font-size: 11px;
+  font-weight: 400;
+}
+.composer {
+  width: calc(100% - 48px);
+  max-width: 800px;
+  align-self: center;
+  margin: 0 24px 20px;
+  padding: 8px;
+  border-radius: 18px;
+  background: var(--panel-bg);
+  border-color: var(--line);
+  box-shadow: none;
+  max-height: 50%;
+  overflow-y: auto;
+}
+.composer:focus-within {
+  border-color: var(--input-line);
+}
+.composerInner {
+  min-width: 0;
+}
+.composer textarea {
+  min-height: 64px;
+  max-height: 180px;
+  padding: 10px 12px;
+  font-size: 15px;
+  line-height: 1.6;
+  background: transparent;
+  border-radius: 10px;
+}
+.composer textarea:focus-visible {
+  outline: 0;
+}
+.composerFooter,
+.composerActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: nowrap;
+  gap: 8px;
+  padding: 2px 4px 0;
+  position: static;
+  transform: none;
+  min-height: 40px;
+  background: transparent;
+  border: 0;
+}
+.composerLeading {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+.composerFooter small,
+.composerActions small {
+  font-size: 10px;
+  color: var(--muted);
+}
+.shell .sendButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px;
+  min-width: 36px;
+  width: 36px;
+  min-height: 36px;
+  height: 36px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.shell .voiceButton {
+  min-width: 36px;
+  width: auto;
+  min-height: 36px;
+  font-size: 11px;
+  background: transparent;
+  color: var(--muted);
+  border-color: transparent;
+  padding: 7px 10px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.shell .voiceRecording {
+  background: var(--voice-recording-bg);
+  color: var(--ink);
+  border-color: var(--voice-recording-line);
+}
+.voiceTools {
+  padding: 0;
+  gap: 3px;
+}
+.scrollLatest {
+  align-self: center;
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4;
+  border: 1px solid var(--line) !important;
+  border-radius: 20px !important;
+  background: var(--paper) !important;
+  color: var(--ink) !important;
+  font-size: 11px !important;
+  box-shadow: 0 3px 14px var(--app-shadow);
+}
+.historyLoad {
+  text-align: center;
+  margin-bottom: 18px;
+  display: flex;
+  justify-content: center;
+}
+.historyLoad button {
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  border: 1px solid var(--line);
+}
+.filePanel {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 24px max(24px, calc((100% - 800px) / 2));
+}
+.fileSearch {
+  max-width: 100%;
+  margin-bottom: 22px;
+}
+.filePanel h2 {
+  font-size: 20px;
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+.fileRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+  padding: 16px 0;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.fileRow > div {
+  flex: 1;
+  min-width: 0;
+}
+.fileRow strong {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+  font-weight: 500;
+}
+.fileMeta {
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  font-size: 11px;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+.inlineStatus {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 10px 0;
+}
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: var(--backdrop);
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+.confirmDialog {
+  width: min(420px, 100%);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 24px;
+  box-shadow: 0 20px 70px var(--app-shadow);
+}
+.confirmDialog h2 {
+  font-size: 17px;
+  margin-bottom: 10px;
+}
+.confirmDialog p {
+  color: var(--muted);
+  font-size: 13px;
+}
+.confirmDialog > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 22px;
+}
+.adminContent {
+  padding: 24px clamp(20px, 4vw, 48px);
+}
+@media (hover: hover) {
+  .chatRowActions {
+    opacity: 0;
+  }
+  .chatRow:hover .chatRowActions,
+  .chatRow:focus-within .chatRowActions {
+    opacity: 1;
+  }
+}
+@media (max-width: 768px), (max-width: 1024px) and (max-height: 500px) {
+  .shell button {
+    min-height: 44px;
+  }
+  .shell .iconButton {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    padding: 11px;
+  }
+  .sidebar,
+  .sidebarCollapsed {
+    display: none;
+    width: min(85vw, 290px);
+    padding: max(12px, env(safe-area-inset-top)) 12px
+      max(12px, env(safe-area-inset-bottom));
+  }
+  .sidebarOpen {
+    display: flex;
+  }
+  .sidebarCollapsed .sidebarBrand,
+  .sidebarCollapsed .navLabel,
+  .sidebarCollapsed .navShortcut,
+  .sidebarCollapsed .searchField,
+  .sidebarCollapsed .listHeading,
+  .sidebarCollapsed .chatList,
+  .sidebarCollapsed .account > span,
+  .sidebarCollapsed .settingsLauncher > div,
+  .sidebarCollapsed .settingsLauncher > svg {
+    display: revert;
+  }
+  .sidebarCollapsed .sidebarTop {
+    justify-content: space-between;
+  }
+  .sidebarCollapsed .navButton {
+    justify-content: flex-start;
+  }
+  .sidebarCollapsed .settingsLauncher {
+    justify-content: flex-start;
+    padding-inline: 8px;
+  }
+  .chatList {
+    min-height: 0;
+    flex-shrink: 1;
+  }
+  .header {
+    height: auto;
+    min-height: 56px;
+    padding: max(5px, env(safe-area-inset-top))
+      max(8px, env(safe-area-inset-right)) 5px
+      max(8px, env(safe-area-inset-left));
+    gap: 5px;
+  }
+  .headerTitle {
+    gap: 4px;
+  }
+  .header h1 {
+    font-size: 13px;
+  }
+  .headerActions {
+    gap: 0;
+  }
+  .chatToolbar {
+    padding: 0 12px 6px;
+    flex-wrap: nowrap;
+  }
+  .modelPicker {
+    flex-basis: 180px;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .shell .modelPicker select {
+    font-size: 16px;
+    min-height: 38px;
+  }
+  .modelDescription {
+    display: none;
+  }
+  .messages {
+    padding: 18px max(18px, env(safe-area-inset-right)) 12px
+      max(18px, env(safe-area-inset-left));
+  }
+  .message {
+    padding: 6px 0;
+    margin-bottom: var(--workspace-thread-gap);
+    border-radius: 0;
+  }
+  .userMessage {
+    padding: 12px 14px;
+    border-radius: 14px;
+    margin-left: 6%;
+  }
+  .markdown {
+    font-size: var(--workspace-message-size);
+  }
+  .composer {
+    width: calc(100% - 20px);
+    margin: 0 max(10px, env(safe-area-inset-right))
+      max(10px, env(safe-area-inset-bottom))
+      max(10px, env(safe-area-inset-left));
+    max-height: 46%;
+    padding: 6px;
+    border-radius: 16px;
+    scroll-padding-bottom: 10px;
+  }
+  .composer textarea {
+    min-height: 48px;
+    max-height: min(130px, 20dvh);
+    padding: 9px 10px;
+    font-size: 16px;
+  }
+  .composer > .composerActions,
+  .composerFooter,
+  .composerActions {
+    position: static;
+    inset: auto;
+    height: auto;
+    min-height: 44px;
+    transform: none;
+    z-index: auto;
+    padding: 1px 2px;
+    border: 0;
+    background: transparent;
+  }
+  .composerFooter small,
+  .composerActions small {
+    display: none;
+  }
+  .shell .sendButton {
+    width: 44px;
+    height: 44px;
+  }
+  .shell .voiceButton {
+    min-height: 44px;
+    padding-inline: 9px;
+  }
+  .emptyHero,
+  .welcome {
+    padding: 16px 0 40px;
+  }
+  .suggestions {
+    gap: 7px;
+    margin-top: 14px;
+  }
+  .shell .suggestion {
+    min-height: 76px;
+    padding: 10px;
+    font-size: 12px;
+  }
+  .suggestion small {
+    font-size: 10px;
+  }
+  .filePanel {
+    padding: 18px;
+  }
+  .shell .mobileOnly {
+    border: 0;
+    padding: 10px;
+  }
+}
+@media (max-height: 500px) {
+  .composer textarea {
+    min-height: 40px;
+    height: 40px;
+    max-height: 70px;
+  }
+  .emptyHero,
+  .welcome {
+    padding-block: 10px;
+  }
+  .suggestions {
+    margin-top: 5px;
+  }
+  .shell .suggestion {
+    min-height: 44px;
+  }
+  .suggestion small {
+    display: none;
+  }
+  .header {
+    min-height: 48px;
+  }
+}
+.shell .conversationMenu > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.shell .conversationMenu > summary::-webkit-details-marker {
+  display: none;
+}
+.shell .conversationMenu > summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}
+.menuPanel.chatTools {
+  width: 200px;
+}
+.sidebarTop {
+  flex-direction: column;
+  align-items: stretch;
+}
+.sidebarCollapsed .sidebarBrand {
+  display: flex;
+  justify-content: center;
+  padding: 0;
+}
+.chatRow {
+  flex-wrap: wrap;
+}
+.chatRow > .listHeading {
+  flex: 0 0 100%;
+  padding-top: 12px;
+}
+.chatRowMain {
+  flex-basis: 100%;
+}
+.fileSearch {
+  display: block;
+}
+.settingsLauncher > .navLabel {
+  display: flex;
+  flex-direction: column;
+}
+.shell .conversationMenu > summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 7px;
+  color: var(--muted);
+}
+.shell .conversationMenu > summary:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.chatToolbar > .conversationMenu {
+  margin-left: auto;
+}
+@media (max-width: 768px), (max-width: 1024px) and (max-height: 500px) {
+  .sidebarCollapsed .sidebarBrand {
+    justify-content: space-between;
+  }
+  .shell .conversationMenu > summary {
+    width: 44px;
+    height: 44px;
+  }
+}

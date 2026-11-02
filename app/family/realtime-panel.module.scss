@@ -269,3 +269,102 @@
     transition: none;
   }
 }
+/* Compact active workspace; capture and transport remain owned by the hook. */
+.active {
+  padding: 20px max(20px, calc((100% - 800px) / 2))
+    max(20px, env(safe-area-inset-bottom));
+}
+.panel {
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  gap: 16px;
+  background: transparent;
+}
+.top h2 {
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+.top time {
+  color: var(--muted);
+}
+.meter {
+  height: 5px;
+}
+.transcripts {
+  padding-top: 12px;
+  scroll-padding-block: 16px;
+}
+.transcripts li {
+  border: 0;
+  border-radius: 14px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+.transcripts .assistant {
+  padding-inline: 0;
+}
+.transcripts .user {
+  margin-left: 12%;
+}
+.transcripts p {
+  font-size: 16px;
+  line-height: 1.8;
+}
+.root .latest {
+  align-self: center;
+  min-height: 36px;
+  font-size: 11px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--paper);
+  color: var(--ink);
+}
+.actions {
+  justify-content: center;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+.actions button {
+  flex: 0 1 140px;
+}
+@media (max-width: 600px) {
+  .active {
+    padding: 14px max(16px, env(safe-area-inset-right))
+      max(12px, env(safe-area-inset-bottom))
+      max(16px, env(safe-area-inset-left));
+  }
+  .panel {
+    padding: 0;
+    gap: 10px;
+  }
+  .top h2 {
+    font-size: 18px;
+  }
+  .transcripts p {
+    font-size: 15px;
+  }
+  .actions {
+    gap: 6px;
+  }
+  .actions button {
+    flex: 1;
+    flex-basis: 0;
+    padding-inline: 7px;
+    font-size: 11px;
+  }
+}
+@media (max-height: 420px) {
+  .active {
+    padding: 8px 14px;
+  }
+  .actions {
+    padding-top: 6px;
+  }
+  .panel {
+    gap: 6px;
+  }
+}

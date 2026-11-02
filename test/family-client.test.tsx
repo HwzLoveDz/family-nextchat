@@ -211,12 +211,14 @@ describe("family client account isolation", () => {
           path !== "/api/family/activity",
       ).length;
     const before = mutations();
-    fireEvent.click(screen.getByRole("button", { name: /^主题$/ }));
+    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("tab", { name: "外观" }));
     fireEvent.click(screen.getByRole("radio", { name: /^午夜灰$/ }));
     expect(container.querySelector("main")).toHaveAttribute(
       "data-family-theme",
       "midnight",
     );
+    fireEvent.click(screen.getByRole("button", { name: "关闭设置" }));
     expect(composer).toHaveValue("尚未发送的草稿");
     expect(screen.getByText("甲的私密回复")).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "选择模型" })).toHaveValue(
@@ -1029,7 +1031,7 @@ describe("family client account isolation", () => {
     fireEvent.click(await screen.findByRole("button", { name: /聊天 a/ }));
     expect(await screen.findByText("甲的私密回复")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "归档对话" }));
-    expect(screen.getByText("归档后从你的列表隐藏。")).toBeInTheDocument();
+    expect(screen.getByText(/归档后从你的列表隐藏/)).toBeInTheDocument();
     expect(archived).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "确认归档" }));
     expect(await screen.findByText("对话已归档。")).toBeInTheDocument();
@@ -1112,6 +1114,236 @@ describe("family client account isolation", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("已归档")).toBeInTheDocument();
     expectMonitoringCopyAbsent();
+  });
+
+  test("a profile role downgrade clears privileged details, draft and File selections before revalidation", async () => {
+    identity = { ...memberA, role: "admin" };
+    const downgraded = { ...memberA, name: "更新后的家庭成员" };
+    let profileSaved = false;
+    let resolveProbe!: (response: Response) => void;
+    const pendingProbe = new Promise<Response>((resolve) => {
+      resolveProbe = resolve;
+    });
+    const baseHandler = requestHandler;
+    requestHandler = async (path, init) => {
+      if (path === "/api/family/me" && init?.method === "PATCH") {
+        profileSaved = true;
+        identity = downgraded;
+        return json({
+          user: downgraded,
+          sessionExpiresAt: "2026-11-29T00:00:00Z",
+        });
+      }
+      if (path === "/api/family/me" && profileSaved) return pendingProbe;
+      if (path === "/api/family/me/sessions") return json({ sessions: [] });
+      if (path === "/api/family/admin/users")
+        return json({
+          users: [
+            {
+              ...memberB,
+              createdAt: "2026-10-30T00:00:00Z",
+              lastSeenAt: null,
+              activeSeconds: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              unknownUsageRequests: 0,
+            },
+          ],
+        });
+      if (path === `/api/family/admin/users/${memberB.id}/chats`)
+        return json({ chats: [chat("other-private")] });
+      if (path === "/api/family/admin/chats/other-private")
+        return json({
+          ...detail("其他账户的管理页私密回复"),
+          chat: chat("other-private"),
+        });
+      return baseHandler(path, init);
+    };
+    render(<FamilyApp />);
+    fireEvent.click(await screen.findByRole("button", { name: /聊天 a/ }));
+    expect(await screen.findByText("甲的私密回复")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
+      target: { value: "降权前的私密草稿" },
+    });
+    const file = new File(["private file"], "downgrade-private.txt", {
+      type: "text/plain",
+    });
+    Object.defineProperty(file, "arrayBuffer", {
+      value: async () => new TextEncoder().encode("private file").buffer,
+    });
+    fireEvent.change(screen.getByLabelText("选择附件文件"), {
+      target: { files: [file] },
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "移除附件 downgrade-private.txt" }),
+      ).toBeEnabled(),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "账户与用量管理" }),
+      ).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "账户与用量管理" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "查看完整聊天" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: /聊天 other-private/ }),
+    );
+    const privilegedNode = await screen.findByText("其他账户的管理页私密回复");
+    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("tab", { name: "账户" }));
+    const name = screen.getByRole("textbox", { name: "称呼" });
+    await waitFor(() => expect(name).toBeEnabled());
+    fireEvent.change(name, { target: { value: downgraded.name } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(profileSaved).toBe(true));
+    await waitFor(() => expect(privilegedNode).not.toBeInTheDocument());
+    expect(
+      screen.queryByRole("dialog", { name: "设置" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("textbox", { name: "发送消息" }),
+    ).not.toBeInTheDocument();
+    await act(async () => {
+      resolveProbe(
+        json({ user: downgraded, sessionExpiresAt: "2026-11-29T00:00:00Z" }),
+      );
+      await pendingProbe;
+    });
+    expect(
+      await screen.findByRole("textbox", { name: "发送消息" }),
+    ).toHaveValue("");
+    expect(screen.queryByText("downgrade-private.txt")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("其他账户的管理页私密回复"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "账户与用量管理" }),
+    ).not.toBeInTheDocument();
+  });
+
+  test("a session API 401 hides old private UI immediately and revalidates before showing login", async () => {
+    let expired = false;
+    let resolveProbe!: (response: Response) => void;
+    const pendingProbe = new Promise<Response>((resolve) => {
+      resolveProbe = resolve;
+    });
+    const baseHandler = requestHandler;
+    requestHandler = async (path, init) => {
+      if (path === "/api/family/me/sessions") {
+        expired = true;
+        return json({ error: "登录已失效" }, 401);
+      }
+      if (path === "/api/family/me" && expired) return pendingProbe;
+      return baseHandler(path, init);
+    };
+    render(<FamilyApp />);
+    fireEvent.click(await screen.findByRole("button", { name: /聊天 a/ }));
+    const privateNode = await screen.findByText("甲的私密回复");
+    fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
+      target: { value: "过期前的私密草稿" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("tab", { name: "账户" }));
+    await waitFor(() => expect(expired).toBe(true));
+    await waitFor(() => expect(privateNode).not.toBeInTheDocument());
+    expect(
+      screen.queryByRole("dialog", { name: "设置" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("textbox", { name: "发送消息" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "登录" }),
+    ).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(([path]) => path === "/api/family/me"),
+      ).toHaveLength(2),
+    );
+    await act(async () => {
+      resolveProbe(json({ error: "请先登录" }, 401));
+      await pendingProbe;
+    });
+    expect(
+      await screen.findByRole("button", { name: "登录" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("甲的私密回复")).not.toBeInTheDocument();
+    expect(
+      screen.queryByDisplayValue("过期前的私密草稿"),
+    ).not.toBeInTheDocument();
+  });
+
+  test("a session API 401 supersedes an older focus probe whose late success cannot restore private UI", async () => {
+    let resolveSessions!: (response: Response) => void;
+    let resolveOldProbe!: (response: Response) => void;
+    let resolveNewProbe!: (response: Response) => void;
+    const pendingSessions = new Promise<Response>((resolve) => {
+      resolveSessions = resolve;
+    });
+    const oldProbe = new Promise<Response>((resolve) => {
+      resolveOldProbe = resolve;
+    });
+    const newProbe = new Promise<Response>((resolve) => {
+      resolveNewProbe = resolve;
+    });
+    let probeCount = 0;
+    const baseHandler = requestHandler;
+    requestHandler = async (path, init) => {
+      if (path === "/api/family/me/sessions") return pendingSessions;
+      if (path === "/api/family/me") {
+        probeCount++;
+        if (probeCount === 2) return oldProbe;
+        if (probeCount === 3) return newProbe;
+      }
+      return baseHandler(path, init);
+    };
+    render(<FamilyApp />);
+    fireEvent.click(await screen.findByRole("button", { name: /聊天 a/ }));
+    const privateNode = await screen.findByText("甲的私密回复");
+    fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
+      target: { value: "不得被旧验证恢复的草稿" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("tab", { name: "账户" }));
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([path]) => path === "/api/family/me/sessions",
+        ),
+      ).toBe(true),
+    );
+    advanceIdentityCooldown();
+    backgroundEvent("focus");
+    await waitFor(() => expect(probeCount).toBe(2));
+    await act(async () => {
+      resolveSessions(json({ error: "登录过期" }, 401));
+      await pendingSessions;
+    });
+    await waitFor(() => expect(probeCount).toBe(3));
+    expect(privateNode).not.toBeInTheDocument();
+    await act(async () => {
+      resolveOldProbe(
+        json({ user: memberA, sessionExpiresAt: "2026-11-29T00:00:00Z" }),
+      );
+      await oldProbe;
+    });
+    expect(privateNode).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("textbox", { name: "发送消息" }),
+    ).not.toBeInTheDocument();
+    await act(async () => {
+      resolveNewProbe(json({ error: "请先登录" }, 401));
+      await newProbe;
+    });
+    expect(
+      await screen.findByRole("button", { name: "登录" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByDisplayValue("不得被旧验证恢复的草稿"),
+    ).not.toBeInTheDocument();
   });
 
   test.each(["approved", "pending"] as const)(

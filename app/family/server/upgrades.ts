@@ -2,11 +2,13 @@ import "server-only";
 import { getPool, transaction } from "./db";
 import { FamilyApiError } from "./errors";
 
-export const FAMILY_APPLICATION_SCHEMA_VERSION = 5;
+export const FAMILY_APPLICATION_SCHEMA_VERSION = 6;
 
 /** Application-only, additive upgrade. The caller owns the transaction and schema lock. */
 export const FAMILY_APPLICATION_UPGRADE_SQL = String.raw`
 ALTER TABLE family_chat ADD COLUMN IF NOT EXISTS model text;
+ALTER TABLE family_chat ADD COLUMN IF NOT EXISTS pinned_at timestamptz;
+CREATE INDEX IF NOT EXISTS family_chat_workspace_order ON family_chat(user_id,pinned_at DESC NULLS LAST,updated_at DESC,id DESC);
 ALTER TABLE family_generation ADD COLUMN IF NOT EXISTS actual_model text;
 ALTER TABLE family_generation ADD COLUMN IF NOT EXISTS mode text NOT NULL DEFAULT 'send'
   CHECK (mode IN ('send','edit','retry','regenerate'));
@@ -153,7 +155,7 @@ CREATE TABLE IF NOT EXISTS family_schema_version (
   version integer NOT NULL CHECK (version >= 0),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
-INSERT INTO family_schema_version(id,version) VALUES(1,5)
+INSERT INTO family_schema_version(id,version) VALUES(1,6)
 ON CONFLICT(id) DO UPDATE
   SET version=GREATEST(family_schema_version.version,EXCLUDED.version),updated_at=now();`;
 
@@ -183,10 +185,11 @@ export async function applicationUpgradeStatus(): Promise<{
   const metadata = (
     await pool.query(`SELECT
       to_regclass('family_schema_version') IS NOT NULL AS version_table_exists,
-      (SELECT count(*) = 94 FROM information_schema.columns
+      (SELECT count(*) = 95 FROM information_schema.columns
         WHERE table_schema = current_schema()
           AND (table_name,column_name,data_type,is_nullable) IN (
             ('family_chat','model','text','YES'),
+            ('family_chat','pinned_at','timestamp with time zone','YES'),
             ('family_generation','actual_model','text','YES'),
             ('family_generation','mode','text','NO'),
             ('family_generation','source_generation_id','uuid','YES'),
