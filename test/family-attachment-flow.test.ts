@@ -205,6 +205,8 @@ afterEach(async () => {
   delete process.env.OPENAI_API_KEY;
   delete process.env.FAMILY_OPENAI_MODEL;
   delete process.env.FAMILY_OPENAI_MODELS;
+  delete process.env.FAMILY_OPENAI_PRIORITY_KEYS;
+  delete process.env.FAMILY_OPENAI_FALLBACK_ENABLED;
 });
 async function generate(body: Record<string, unknown>) {
   const response = await chats.generate(
@@ -415,3 +417,92 @@ test("an image/PDF unsupported model fails before INSERT or generation", async (
   );
   expect(fetchMock).not.toHaveBeenCalled();
 });
+
+test.each([
+  "success",
+  "both empty",
+  "rate limited",
+  "accepted then broken",
+  "refusal cancel never settles",
+])(
+  "named key routing: %s keeps one logical generation and never uses the excluded personal key",
+  async (mode) => {
+    process.env.FAMILY_OPENAI_PRIORITY_KEYS = JSON.stringify([
+      { name: "志颖", key: "synthetic-priority-a" },
+      { name: "子哲", key: "synthetic-priority-b" },
+    ]);
+    process.env.FAMILY_OPENAI_FALLBACK_ENABLED = "0";
+    process.env.OPENAI_API_KEY = "synthetic-personal-never-use";
+    const accepted = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url, init) => {
+      const auth = new Headers(init?.headers).get("Authorization");
+      expect(auth).not.toBe("Bearer synthetic-personal-never-use");
+      if (mode === "refusal cancel never settles") {
+        return new Response(
+          new ReadableStream({ cancel: () => new Promise<void>(() => {}) }),
+          { status: 401 },
+        );
+      }
+      if (mode === "accepted then broken") {
+        return new Response(
+          'data: {"choices":[{"delta":{"content":"Partial answer"}}]}\n\n',
+        );
+      }
+      if (mode === "rate limited") {
+        return Response.json(
+          {
+            error: { code: "rate_limit_exceeded", type: "insufficient_quota" },
+          },
+          { status: 429 },
+        );
+      }
+      if (auth === "Bearer synthetic-priority-a" || mode === "both empty") {
+        return Response.json(
+          { error: { code: "credit_balance_exhausted" } },
+          { status: 429 },
+        );
+      }
+      return accepted(url, init);
+    });
+    const stream = await generate({
+      content: "Fixture question",
+      attachments: [input()],
+    });
+    const events = stream
+      .trim()
+      .split("\n\n")
+      .map((frame) => JSON.parse(frame.slice(6)));
+    expect(
+      query.mock.calls.filter(([sql]) =>
+        sql.startsWith("INSERT INTO family_generation("),
+      ).length,
+    ).toBe(1);
+    expect(
+      query.mock.calls.filter(([sql]) =>
+        sql.startsWith("UPDATE family_generation SET state=$1"),
+      ).length,
+    ).toBe(1);
+    expect(
+      query.mock.calls.filter(([sql]) =>
+        sql.startsWith("INSERT INTO family_attachment("),
+      ).length,
+    ).toBe(1);
+    if (mode === "success") {
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(
+        events.find((event) => event.type === "done")?.usage,
+      ).toMatchObject({ inputTokens: 12, outputTokens: 4, source: "reported" });
+      expect(events.filter((event) => event.type === "start")).toHaveLength(1);
+      expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual(
+        JSON.parse(String(fetchMock.mock.calls[1][1]?.body)),
+      );
+    } else {
+      expect(fetchMock).toHaveBeenCalledTimes(mode === "both empty" ? 2 : 1);
+      expect(events.some((event) => event.type === "error")).toBe(true);
+      expect(events.some((event) => event.type === "done")).toBe(false);
+      if (mode === "both empty") expect(stream).toContain("可用额度已用完");
+    }
+    expect(stream).not.toContain("synthetic-priority");
+    expect(stream).not.toContain("synthetic-personal");
+  },
+);

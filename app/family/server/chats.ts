@@ -6,6 +6,11 @@ import { getPool, transaction } from "./db";
 import { FamilyApiError, digest, text } from "./errors";
 import { PRIVATE_API_HEADERS } from "../enabled";
 import { OpenAIStreamDecoder } from "./openai-stream";
+import {
+  configuredProviderKeys,
+  rejectExhaustedQuota,
+  withProviderKey,
+} from "./provider-keys";
 import { allowedModel, completionBody, modelCatalog } from "./models";
 import {
   prepareAttachments,
@@ -610,7 +615,6 @@ export async function generate(
   const requestId = text(body.requestId, 100, "请求编号", 8);
   if (!/^[a-zA-Z0-9_-]+$/.test(requestId))
     throw new FamilyApiError(400, "请求编号格式无效。");
-  const apiKey = process.env.OPENAI_API_KEY;
   if (
     !(
       await getPool().query(
@@ -622,7 +626,7 @@ export async function generate(
     throw new FamilyApiError(404, "对话不存在。");
   }
   const intent = generationIntent(body);
-  if (!apiKey)
+  if (!configuredProviderKeys().length)
     throw new FamilyApiError(
       503,
       "管理员尚未配置模型 API，当前不能发送消息。",
@@ -757,24 +761,34 @@ export async function generate(
             });
             return;
           }
-          const upstream = await fetch(
-            "https://api.openai.com/v1/chat/completions",
-            {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${apiKey}`,
-                "Content-Type": "application/json",
+          // Only an explicit, pre-acceptance quota rejection may select another
+          // credential. The accepted response/stream is consumed exactly once.
+          const upstream = await withProviderKey(async ({ key }) => {
+            const response = await fetch(
+              "https://api.openai.com/v1/chat/completions",
+              {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${key}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify(
+                  completionBody(started.model, started.history),
+                ),
+                signal: abort.signal,
+                redirect: "error",
+                cache: "no-store",
               },
-              body: JSON.stringify(
-                completionBody(started.model, started.history),
-              ),
-              signal: abort.signal,
-              redirect: "error",
-              cache: "no-store",
-            },
-          );
+            );
+            await rejectExhaustedQuota(response, abort.signal);
+            return response;
+          }, abort.signal);
           if (!upstream.ok || !upstream.body) {
-            await upstream.body?.cancel();
+            // A refusal must not keep the generation/ledger open while an
+            // unresponsive provider waits forever on its cancellation hook.
+            try {
+              void upstream.body?.cancel().catch(() => {});
+            } catch {}
             throw new FamilyApiError(
               502,
               upstream.status === 429

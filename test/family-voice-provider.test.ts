@@ -6,6 +6,7 @@ import { Readable } from "node:stream";
 class FixtureSocket extends EventEmitter {
   static instances: FixtureSocket[] = [];
   static constructorError: Error | null = null;
+  static onConstruct: ((socket: FixtureSocket) => void) | null = null;
   send = jest.fn<(text: string) => void>();
   terminate = jest.fn();
   constructor(
@@ -15,15 +16,29 @@ class FixtureSocket extends EventEmitter {
     super();
     if (FixtureSocket.constructorError) throw FixtureSocket.constructorError;
     FixtureSocket.instances.push(this);
+    FixtureSocket.onConstruct?.(this);
   }
 }
 jest.unstable_mockModule("server-only", () => ({}));
 jest.unstable_mockModule("ws", () => ({ default: FixtureSocket }));
 const media = await import("@/app/family/server/voice-media");
 const provider = await import("@/app/family/server/voice-provider");
+const { withProviderKey, ProviderQuotaExhaustedError } = await import(
+  "@/app/family/server/provider-keys"
+);
 const initialFetch = global.fetch;
 const diagnostics: unknown[][] = [];
 let restoreDiagnostics = () => {};
+const providerEnvNames = [
+  "FAMILY_OPENAI_PRIORITY_KEYS",
+  "FAMILY_OPENAI_FALLBACK_NAME",
+  "FAMILY_OPENAI_FALLBACK_ENABLED",
+] as const;
+let providerEnvSnapshot: (string | undefined)[];
+const fixtureCredentials = [
+  { name: "synthetic-first", key: "synthetic-first-key-not-real" },
+  { name: "synthetic-second", key: "synthetic-second-key-not-real" },
+];
 const encode = (event: unknown) =>
   new TextEncoder().encode(JSON.stringify(event));
 const frame = (socket: FixtureSocket, event: unknown) =>
@@ -53,6 +68,11 @@ function done(status = "completed") {
 beforeEach(() => {
   FixtureSocket.instances.length = 0;
   FixtureSocket.constructorError = null;
+  FixtureSocket.onConstruct = null;
+  providerEnvSnapshot = providerEnvNames.map((name) => process.env[name]);
+  providerEnvNames.forEach((name) => delete process.env[name]);
+  process.env.FAMILY_OPENAI_PRIORITY_KEYS = JSON.stringify(fixtureCredentials);
+  process.env.FAMILY_OPENAI_FALLBACK_ENABLED = "0";
   diagnostics.length = 0;
   const spy = jest
     .spyOn(console, "error")
@@ -64,7 +84,15 @@ beforeEach(() => {
     throw new Error("No outbound network permitted in voice tests");
   });
 });
-afterEach(() => restoreDiagnostics());
+afterEach(() => {
+  restoreDiagnostics();
+  jest.useRealTimers();
+  providerEnvNames.forEach((name, index) => {
+    const previous = providerEnvSnapshot[index];
+    if (previous === undefined) delete process.env[name];
+    else process.env[name] = previous;
+  });
+});
 afterAll(() => {
   global.fetch = initialFetch;
 });
@@ -482,5 +510,291 @@ describe("current provider request boundaries and WebSocket cleanup", () => {
       code: "VOICE_PROVIDER_ERROR",
     });
     expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("voice credential fallback is restricted to explicit unstarted quota rejection", () => {
+  const handshake = (
+    statusCode: number,
+    code: string,
+    type = "invalid_request_error",
+  ) =>
+    Object.assign(
+      Readable.from([
+        Buffer.from(
+          JSON.stringify({
+            error: { code, type, message: "private-provider-body" },
+          }),
+        ),
+      ]),
+      { statusCode },
+    );
+  function completeSpeech(socket: FixtureSocket) {
+    socket.emit("open");
+    frame(socket, created);
+    frame(socket, {
+      type: "response.output_audio.delta",
+      response_id: "resp_fixture",
+      delta: Buffer.from([0, 0, 1, 0]).toString("base64"),
+    });
+    frame(socket, done());
+  }
+  test("STT consumes and releases an explicit quota refusal before using the next key", async () => {
+    const rejected = new Response(
+      JSON.stringify({
+        error: {
+          code: "insufficient_quota",
+          type: "insufficient_quota",
+          message: "private-provider-body",
+        },
+      }),
+      { status: 429 },
+    );
+    const evidence = provider.newVoiceEvidence(),
+      controller = new AbortController();
+    const mock = jest
+      .fn<typeof fetch>()
+      .mockImplementationOnce(async () => rejected)
+      .mockImplementationOnce(async () => {
+        expect(rejected.bodyUsed).toBe(true);
+        expect(rejected.body?.locked).toBe(false);
+        return new Response(
+          JSON.stringify({
+            text: "合成转写",
+            usage: { input_tokens: 6, output_tokens: 2 },
+            model: provider.TRANSCRIBE_MODEL,
+          }),
+        );
+      });
+    global.fetch = mock;
+    await expect(
+      withProviderKey(
+        ({ key }) =>
+          provider.requestTranscription(
+            key,
+            inputWav(),
+            controller.signal,
+            evidence,
+          ),
+        controller.signal,
+      ),
+    ).resolves.toBe("合成转写");
+    expect(
+      mock.mock.calls.map(
+        ([, options]) =>
+          (options?.headers as Record<string, string>).Authorization,
+      ),
+    ).toEqual(fixtureCredentials.map((item) => `Bearer ${item.key}`));
+    expect(evidence.usage).toEqual({
+      source: "reported",
+      inputTokens: 6,
+      outputTokens: 2,
+    });
+    expect(evidence.actualModel).toBe(provider.TRANSCRIBE_MODEL);
+    expect(JSON.stringify(diagnostics)).not.toMatch(
+      /private-provider-body|synthetic-first-key|synthetic-second-key/,
+    );
+  });
+  test.each([
+    [429, "rate_limit_exceeded"],
+    [401, "insufficient_quota"],
+    [500, "insufficient_quota"],
+  ])(
+    "STT status %s code %s never switches credentials",
+    async (status, code) => {
+      global.fetch = jest.fn<typeof fetch>(
+        async () =>
+          new Response(
+            JSON.stringify({ error: { code, type: "rate_limit_error" } }),
+            { status },
+          ),
+      );
+      const signal = new AbortController().signal;
+      await expect(
+        withProviderKey(
+          ({ key }) =>
+            provider.requestTranscription(
+              key,
+              inputWav(),
+              signal,
+              provider.newVoiceEvidence(),
+            ),
+          signal,
+        ),
+      ).rejects.toMatchObject({ code: "VOICE_PROVIDER_ERROR" });
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+  test("an STT abort after the first refusal cannot advance to another key", async () => {
+    const controller = new AbortController();
+    global.fetch = jest.fn<typeof fetch>(async () => {
+      controller.abort(
+        new DOMException("Synthetic cancellation", "AbortError"),
+      );
+      return new Response(
+        JSON.stringify({
+          error: { code: "insufficient_quota", type: "insufficient_quota" },
+        }),
+        { status: 429 },
+      );
+    });
+    await expect(
+      withProviderKey(
+        ({ key }) =>
+          provider.requestTranscription(
+            key,
+            inputWav(),
+            controller.signal,
+            provider.newVoiceEvidence(),
+          ),
+        controller.signal,
+      ),
+    ).rejects.toBeDefined();
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+  test("WS handshake quota fallback destroys the old response/socket and timers before opening the next one", async () => {
+    jest.useFakeTimers({
+      doNotFake: ["nextTick", "setImmediate", "queueMicrotask"],
+    });
+    const evidence = provider.newVoiceEvidence(),
+      signal = new AbortController().signal;
+    const response = handshake(429, "insufficient_quota", "insufficient_quota");
+    let oldCleanedBeforeNext = false;
+    FixtureSocket.onConstruct = (socket) => {
+      if (FixtureSocket.instances.length !== 2) return;
+      const first = FixtureSocket.instances[0];
+      oldCleanedBeforeNext =
+        first.terminate.mock.calls.length === 1 &&
+        first.listenerCount("open") === 0 &&
+        first.listenerCount("message") === 0 &&
+        response.destroyed;
+      queueMicrotask(() => completeSpeech(socket));
+    };
+    const pending = withProviderKey(
+      ({ key }) => provider.requestSpeech(key, "合成朗读", signal, evidence),
+      signal,
+    );
+    const first = FixtureSocket.instances[0];
+    first.emit("unexpected-response", {}, response);
+    await expect(pending).resolves.toHaveLength(48);
+    expect(oldCleanedBeforeNext).toBe(true);
+    expect(
+      FixtureSocket.instances.map(
+        (socket) => socket.options.headers.Authorization,
+      ),
+    ).toEqual(fixtureCredentials.map((item) => `Bearer ${item.key}`));
+    expect(first.send).not.toHaveBeenCalled();
+    expect(FixtureSocket.instances[1].send).toHaveBeenCalledTimes(1);
+    expect(
+      FixtureSocket.instances.every(
+        (socket) => socket.terminate.mock.calls.length === 1,
+      ),
+    ).toBe(true);
+    expect(jest.getTimerCount()).toBe(0);
+    expect(evidence.usage).toEqual({
+      source: "reported",
+      inputTokens: 11,
+      outputTokens: 7,
+    });
+    expect(JSON.stringify(diagnostics)).not.toMatch(
+      /private-provider-body|synthetic-first-key|synthetic-second-key/,
+    );
+  });
+  test.each([
+    [429, "rate_limit_exceeded"],
+    [401, "insufficient_quota"],
+  ])("WS handshake status %s code %s cannot switch", async (status, code) => {
+    const signal = new AbortController().signal;
+    const pending = withProviderKey(
+      ({ key }) =>
+        provider.requestSpeech(
+          key,
+          "合成朗读",
+          signal,
+          provider.newVoiceEvidence(),
+        ),
+      signal,
+    );
+    const rejected = expect(pending).rejects.toMatchObject({
+      code: "VOICE_PROVIDER_ERROR",
+    });
+    FixtureSocket.instances[0].emit(
+      "unexpected-response",
+      {},
+      handshake(status, code),
+    );
+    await rejected;
+    expect(FixtureSocket.instances).toHaveLength(1);
+    expect(FixtureSocket.instances[0].terminate).toHaveBeenCalledTimes(1);
+  });
+  test.each(["provider-event", "late-handshake"])(
+    "an opened WS %s quota-looking failure never creates a second generation",
+    async (mode) => {
+      const signal = new AbortController().signal;
+      const pending = withProviderKey(
+        ({ key }) =>
+          provider.requestSpeech(
+            key,
+            "合成朗读",
+            signal,
+            provider.newVoiceEvidence(),
+          ),
+        signal,
+      );
+      const rejected = expect(pending).rejects.toMatchObject({
+        code: "VOICE_PROVIDER_ERROR",
+      });
+      const socket = FixtureSocket.instances[0];
+      socket.emit("open");
+      if (mode === "provider-event")
+        frame(socket, {
+          type: "error",
+          error: {
+            code: "insufficient_quota",
+            type: "insufficient_quota",
+            message: "private-provider-body",
+          },
+        });
+      else
+        socket.emit(
+          "unexpected-response",
+          {},
+          handshake(429, "insufficient_quota", "insufficient_quota"),
+        );
+      await rejected;
+      expect(FixtureSocket.instances).toHaveLength(1);
+      expect(socket.send).toHaveBeenCalledTimes(1);
+      expect(socket.terminate).toHaveBeenCalledTimes(1);
+    },
+  );
+  test("abort during a pending WS handshake body releases the socket and never switches", async () => {
+    jest.useFakeTimers({
+      doNotFake: ["nextTick", "setImmediate", "queueMicrotask"],
+    });
+    const controller = new AbortController(),
+      evidence = provider.newVoiceEvidence();
+    const pending = withProviderKey(
+      ({ key }) =>
+        provider.requestSpeech(key, "合成朗读", controller.signal, evidence),
+      controller.signal,
+    );
+    const rejected = expect(pending).rejects.toBeDefined();
+    const response = Object.assign(new Readable({ read() {} }), {
+      statusCode: 429,
+    });
+    FixtureSocket.instances[0].emit("unexpected-response", {}, response);
+    controller.abort();
+    await rejected;
+    expect(response.destroyed).toBe(true);
+    expect(FixtureSocket.instances).toHaveLength(1);
+    expect(FixtureSocket.instances[0].send).not.toHaveBeenCalled();
+    expect(FixtureSocket.instances[0].terminate).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+    expect(evidence.usage.source).toBe("unknown");
+  });
+  test("a directly typed quota error remains recognizable without exposing provider text", () => {
+    const error = new ProviderQuotaExhaustedError();
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).not.toContain("private-provider-body");
   });
 });

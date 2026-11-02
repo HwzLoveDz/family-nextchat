@@ -8,6 +8,7 @@ import { FAMILY_NOTICE, type FamilySiteStatus } from "../types";
 import { configuredOrigin } from "./errors";
 import { ensureFamilySchema } from "./schema";
 import { applicationUpgradeStatus } from "./upgrades";
+import { hasProviderKeys } from "./provider-keys";
 
 function statusErrorCode(error: unknown): string {
   if (!error || typeof error !== "object") return "STATUS_UNCLASSIFIED";
@@ -59,7 +60,7 @@ export async function siteStatus(): Promise<FamilySiteStatus> {
     ready: false,
     needsSetup: false,
     dbConfigured: !!process.env.DATABASE_URL,
-    modelConfigured: !!process.env.OPENAI_API_KEY,
+    modelConfigured: hasProviderKeys(),
     schemaReady: false,
     schemaVersion: 0,
     notice: FAMILY_NOTICE,
@@ -78,7 +79,7 @@ export async function siteStatus(): Promise<FamilySiteStatus> {
     if (!setup.rows.length) throw new Error();
     result.needsSetup = !setup.rows[0].initialized;
     result.ready = !!setup.rows[0].initialized;
-    if (!process.env.OPENAI_API_KEY)
+    if (!result.modelConfigured)
       result.notice += " 模型 API 尚未配置，当前不能发送消息。";
     Object.assign(result, await applicationUpgradeStatus());
     return result;

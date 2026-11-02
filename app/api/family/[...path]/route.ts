@@ -22,6 +22,7 @@ import {
   validId,
 } from "@/app/family/server/chats";
 import { modelCatalog } from "@/app/family/server/models";
+import { providerKeySummary } from "@/app/family/server/provider-keys";
 import {
   ATTACHMENT_REQUEST_LIMIT,
   readAttachment,
@@ -206,7 +207,12 @@ async function handle(
     if (path[0] === "admin") {
       if (method === "GET" && joined === "admin/users") {
         await requireFamilyApplicationUpgrade();
-        return finish(json({ users: await listUsers() }));
+        return finish(
+          json({
+            users: await listUsers(),
+            providerKeys: providerKeySummary(),
+          }),
+        );
       }
       if (method === "POST" && joined === "admin/invites")
         return finish(

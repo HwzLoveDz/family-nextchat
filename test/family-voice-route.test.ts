@@ -67,6 +67,15 @@ jest.unstable_mockModule("@/app/family/server/voice-provider", () => ({
   }),
 }));
 const { FamilyApiError } = await import("@/app/family/server/errors");
+const { ProviderQuotaExhaustedError } = await import(
+  "@/app/family/server/provider-keys"
+);
+const providerEnvNames = [
+  "FAMILY_OPENAI_PRIORITY_KEYS",
+  "FAMILY_OPENAI_FALLBACK_NAME",
+  "FAMILY_OPENAI_FALLBACK_ENABLED",
+] as const;
+let providerEnvSnapshot: (string | undefined)[];
 const media = await import("@/app/family/server/voice-media");
 const { POST } = await import("@/app/api/family/voice/[...path]/route");
 let foreignChat = false;
@@ -110,6 +119,8 @@ const route = (path: string, request: Request) =>
   POST(request, { params: Promise.resolve({ path: [path] }) });
 beforeEach(() => {
   jest.clearAllMocks();
+  providerEnvSnapshot = providerEnvNames.map((name) => process.env[name]);
+  providerEnvNames.forEach((name) => delete process.env[name]);
   foreignChat = false;
   unavailableMessage = false;
   approved = true;
@@ -157,7 +168,85 @@ afterEach(() => {
   delete process.env.BETTER_AUTH_SECRET;
   delete process.env.BETTER_AUTH_URL;
   delete process.env.FAMILY_MODE;
+  providerEnvNames.forEach((name, index) => {
+    const previous = providerEnvSnapshot[index];
+    if (previous === undefined) delete process.env[name];
+    else process.env[name] = previous;
+  });
   jest.useRealTimers();
+});
+
+test.each(["transcribe", "speech"])(
+  "%s quota fallback uses two synthetic credentials inside one operation and final ledger write",
+  async (kind) => {
+    process.env.FAMILY_OPENAI_PRIORITY_KEYS = JSON.stringify([
+      { name: "synthetic-first", key: "synthetic-first-key-not-real" },
+      { name: "synthetic-second", key: "synthetic-second-key-not-real" },
+    ]);
+    process.env.FAMILY_OPENAI_FALLBACK_ENABLED = "0";
+    const attempt = kind === "transcribe" ? transcribe : speak;
+    attempt.mockRejectedValueOnce(new ProviderQuotaExhaustedError());
+    const response = await route(
+      kind,
+      kind === "transcribe" ? transcriptionRequest() : speechRequest(),
+    );
+    expect(response.status).toBe(200);
+    expect(attempt.mock.calls.map((call) => call[0])).toEqual([
+      "synthetic-first-key-not-real",
+      "synthetic-second-key-not-real",
+    ]);
+    expect(attempt.mock.calls[0][2]).toBe(attempt.mock.calls[1][2]);
+    expect(attempt.mock.calls[0][3]).toBe(attempt.mock.calls[1][3]);
+    expect(begin).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith(
+      operationId,
+      expect.objectContaining({ state: "complete" }),
+    );
+    await response.body?.cancel();
+  },
+);
+
+test("fallback cannot restart the single 35-second voice operation deadline", async () => {
+  jest.useFakeTimers();
+  process.env.FAMILY_OPENAI_PRIORITY_KEYS = JSON.stringify([
+    { name: "synthetic-first", key: "synthetic-first-key-not-real" },
+    { name: "synthetic-second", key: "synthetic-second-key-not-real" },
+  ]);
+  process.env.FAMILY_OPENAI_FALLBACK_ENABLED = "0";
+  speak.mockImplementationOnce(
+    async () =>
+      new Promise((_resolve, reject) => {
+        setTimeout(() => reject(new ProviderQuotaExhaustedError()), 30_000);
+      }),
+  );
+  speak.mockImplementationOnce(
+    async (_key, _text, signal) =>
+      new Promise((_resolve, reject) => {
+        if (signal.aborted) reject(signal.reason);
+        else
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+      }),
+  );
+  const pending = route("speech", speechRequest());
+  await jest.advanceTimersByTimeAsync(35_000);
+  const response = await pending;
+  expect(response.status).toBe(504);
+  expect(speak).toHaveBeenCalledTimes(2);
+  expect(begin).toHaveBeenCalledTimes(1);
+  expect(finish).toHaveBeenCalledTimes(1);
+  expect(finish).toHaveBeenCalledWith(
+    operationId,
+    expect.objectContaining({
+      state: "error",
+      usageSource: "unknown",
+      inputTokens: null,
+      outputTokens: null,
+    }),
+  );
+  expect(jest.getTimerCount()).toBe(0);
 });
 
 test("cross-origin audio cannot reach authentication, ledger or provider", async () => {

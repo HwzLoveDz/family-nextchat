@@ -20,6 +20,7 @@ import {
   type FamilyMessageRequest,
   type FamilyModel,
   type FamilyModelCatalog,
+  type FamilyProviderKeyInfo,
   type FamilySiteStatus,
   type FamilyStreamEvent,
   type FamilyUsage,
@@ -343,6 +344,7 @@ export function FamilyApp() {
   const [archiveConfirm, setArchiveConfirm] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [adminUsers, setAdminUsers] = useState<FamilyAdminUser[]>([]);
+  const [providerKeys, setProviderKeys] = useState<FamilyProviderKeyInfo[]>([]);
   const [adminSelectedUser, setAdminSelectedUser] =
     useState<FamilyAdminUser | null>(null);
   const [adminChats, setAdminChats] = useState<FamilyChat[]>([]);
@@ -530,6 +532,7 @@ export function FamilyApp() {
     setWorking(false);
     setSidebarOpen(false);
     setAdminUsers([]);
+    setProviderKeys([]);
     setAdminSelectedUser(null);
     setAdminChats([]);
     setAdminDetail(null);
@@ -1463,10 +1466,12 @@ export function FamilyApp() {
 
   const openAdmin = async () => {
     voiceReset.current();
-    const data = await request<{ users: FamilyAdminUser[] }>(
-      "/api/family/admin/users",
-    );
+    const data = await request<{
+      users: FamilyAdminUser[];
+      providerKeys?: FamilyProviderKeyInfo[];
+    }>("/api/family/admin/users");
     setAdminUsers(data.users);
+    setProviderKeys(data.providerKeys ?? []);
     setArchiveConfirm(false);
     setScreen("admin");
     setSidebarOpen(false);
@@ -2217,6 +2222,27 @@ export function FamilyApp() {
           ) : null}
           {screen === "admin" ? (
             <div className={styles.adminContent}>
+              {providerKeys.length ? (
+                <section
+                  className={styles.inviteGuide}
+                  aria-label="API 使用顺序"
+                >
+                  <h2>API 使用顺序</h2>
+                  <p>
+                    {providerKeys
+                      .map(
+                        (key) =>
+                          `${key.name}${
+                            key.tier === "fallback" ? "（备用）" : ""
+                          }`,
+                      )
+                      .join(" → ")}
+                  </p>
+                  <small>
+                    按此顺序使用；当前一项额度耗尽时自动切换。这里只显示配置顺序，不代表实时剩余额度。
+                  </small>
+                </section>
+              ) : null}
               <section className={styles.inviteGuide}>
                 <h2>邀请家人</h2>
                 <p>

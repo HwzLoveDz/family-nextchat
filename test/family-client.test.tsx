@@ -1046,6 +1046,10 @@ describe("family client account isolation", () => {
     requestHandler = async (path, init) => {
       if (path === "/api/family/admin/users")
         return json({
+          providerKeys: [
+            { name: "志颖", tier: "priority" },
+            { name: "子哲", tier: "priority" },
+          ],
           users: [
             {
               ...memberB,
@@ -1087,6 +1091,12 @@ describe("family client account isolation", () => {
     expect(within(account!).getByText("969 / 979")).toBeInTheDocument();
     expect(within(account!).getByText("3")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "刷新统计" })).toBeEnabled();
+    expect(
+      screen.getByRole("region", { name: "API 使用顺序" }),
+    ).toHaveTextContent("志颖 → 子哲");
+    expect(
+      screen.getByRole("region", { name: "API 使用顺序" }),
+    ).not.toHaveTextContent("备用");
     expect(
       within(account!).getByRole("button", { name: "查看完整聊天" }),
     ).toBeEnabled();

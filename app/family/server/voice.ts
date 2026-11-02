@@ -12,6 +12,7 @@ import {
   type VoiceEvidence,
 } from "./voice-provider";
 import type { FamilyUsage } from "../types";
+import { configuredProviderKeys, withProviderKey } from "./provider-keys";
 
 const uuid =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -20,15 +21,13 @@ function id(value: unknown): string {
     throw new FamilyApiError(400, "语音请求编号无效。", "INVALID_VOICE_ID");
   return value;
 }
-function providerKey(): string {
-  const key = process.env.OPENAI_API_KEY?.trim();
-  if (!key)
+function providerKey(): void {
+  if (!configuredProviderKeys().length)
     throw new FamilyApiError(
       503,
       "管理员尚未配置语音服务。",
       "VOICE_NOT_CONFIGURED",
     );
-  return key;
 }
 async function assertVoiceAccess(
   userId: string,
@@ -239,7 +238,7 @@ export async function transcribeVoice(
   const wav = new Uint8Array(await audio.arrayBuffer());
   const { audioSeconds } = validateVoiceWav(wav);
   await assertVoiceAccess(userId, chatId);
-  const key = providerKey();
+  providerKey();
   const operation = await beginVoiceOperation(userId, {
     requestId,
     kind: "transcribe",
@@ -252,11 +251,9 @@ export async function transcribeVoice(
   evidence.audioSeconds = audioSeconds;
   let state: "complete" | "error" = "error";
   try {
-    const text = await requestTranscription(
-      key,
-      wav,
+    const text = await withProviderKey(
+      ({ key }) => requestTranscription(key, wav, lifetime.signal, evidence),
       lifetime.signal,
-      evidence,
     );
     await lifetime.stop();
     if (lifetime.signal.aborted) throw lifetime.signal.reason;
@@ -316,7 +313,7 @@ export async function speakVoice(
   const { parts, truncated } = speechParts(saved.content);
   if (part >= parts.length)
     throw new FamilyApiError(400, "朗读段落不存在。", "INVALID_VOICE_PART");
-  const key = providerKey();
+  providerKey();
   const operation = await beginVoiceOperation(userId, {
     requestId,
     kind: "speech",
@@ -329,11 +326,9 @@ export async function speakVoice(
   const evidence = newVoiceEvidence();
   let state: "complete" | "error" = "error";
   try {
-    const wav = await requestSpeech(
-      key,
-      parts[part],
+    const wav = await withProviderKey(
+      ({ key }) => requestSpeech(key, parts[part], lifetime.signal, evidence),
       lifetime.signal,
-      evidence,
     );
     await lifetime.stop();
     if (lifetime.signal.aborted) throw lifetime.signal.reason;

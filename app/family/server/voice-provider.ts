@@ -5,6 +5,11 @@ import type { IncomingMessage } from "node:http";
 import type { FamilyUsage } from "../types";
 import { FamilyApiError } from "./errors";
 import {
+  ProviderQuotaExhaustedError,
+  isQuotaExhaustedError,
+  rejectExhaustedQuota,
+} from "./provider-keys";
+import {
   VOICE_PCM_MAX,
   pcm24kWav,
   reportedVoiceSeconds,
@@ -247,7 +252,15 @@ export async function requestTranscription(
     },
   );
   if (!response.ok) {
-    await response.body?.cancel();
+    try {
+      await rejectExhaustedQuota(response, signal);
+    } finally {
+      // Always discard a refusal, including an abort that precedes inspection.
+      // Do not extend the route deadline for an unresponsive cancel promise.
+      try {
+        void response.body?.cancel().catch(() => {});
+      } catch {}
+    }
     throw providerError();
   }
   const value = await providerJson(response);
@@ -413,6 +426,7 @@ export async function requestSpeech(
     let handshakeResponse: IncomingMessage | undefined;
     let diagnosticTimer: ReturnType<typeof setTimeout> | undefined;
     let settled = false;
+    let opened = false;
     const parser = new RealtimeSpeechDecoder(evidence);
     const finish = (error?: unknown, audio?: Uint8Array) => {
       if (settled) return;
@@ -446,6 +460,9 @@ export async function requestSpeech(
         },
       );
       socket.once("open", () => {
+        // Once a WebSocket is open it may already carry a billable session;
+        // neither provider events nor later failures may trigger key fallback.
+        opened = true;
         if (signal.aborted) {
           onAbort();
           return;
@@ -490,7 +507,15 @@ export async function requestSpeech(
             httpStatus: response.statusCode,
             ...details,
           });
-          finish(providerError());
+          finish(
+            !opened &&
+              isQuotaExhaustedError(response.statusCode ?? 0, {
+                code: details.eventCode,
+                type: details.eventType,
+              })
+              ? new ProviderQuotaExhaustedError()
+              : providerError(),
+          );
         });
       });
       if (signal.aborted) onAbort();

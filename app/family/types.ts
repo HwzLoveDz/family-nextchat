@@ -27,6 +27,10 @@ export interface FamilyMe {
   user: FamilyUser;
   sessionExpiresAt: string;
 }
+export interface FamilyProviderKeyInfo {
+  name: string;
+  tier: "priority" | "fallback";
+}
 export interface FamilyChat {
   id: string;
   title: string;
