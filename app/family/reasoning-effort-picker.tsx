@@ -5,6 +5,7 @@ import {
   type FamilyReasoningEffort,
 } from "./reasoning-types";
 import styles from "./reasoning-effort-picker.module.scss";
+import { WorkspaceSelect } from "./workspace-select";
 
 export function ReasoningEffortPicker({
   value,
@@ -16,27 +17,25 @@ export function ReasoningEffortPicker({
   disabled?: boolean;
 }) {
   return (
-    <label className={styles.control}>
-      <span className={styles.srOnly}>推理强度</span>
-      <select
-        className={styles.select}
-        aria-label="推理强度"
-        title="推理强度"
+    <div className={styles.control}>
+      <WorkspaceSelect
+        label="推理强度"
         value={value}
         disabled={disabled}
-        onChange={(event) => {
-          const next = event.currentTarget.value;
+        width={174}
+        options={[
+          { value: "low", label: "轻度" },
+          { value: "medium", label: "中等" },
+          { value: "high", label: "高强度" },
+        ]}
+        onChange={(next) => {
           if (
             !disabled &&
             (FAMILY_REASONING_EFFORTS as readonly string[]).includes(next)
           )
             onChange(next as FamilyReasoningEffort);
         }}
-      >
-        <option value="low">轻度</option>
-        <option value="medium">中等</option>
-        <option value="high">高强度</option>
-      </select>
-    </label>
+      />
+    </div>
   );
 }

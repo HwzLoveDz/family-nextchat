@@ -19,6 +19,10 @@ const paths = {
   arrowDown: "M12 4v16m-7-7 7 7 7-7",
   close: "m6 6 12 12M6 18 18 6",
   logout: "M9 3H4v18h5m5-14 5 5-5 5m-6-5h13",
+  edit: "m15 5 4 4M4 20l4-1 12-12a2.8 2.8 0 0 0-4-4L4 15v5Z",
+  download: "M12 3v12m-4-4 4 4 4-4M4 17v4h16v-4",
+  refresh:
+    "M20 10a8 8 0 0 0-14-5L3 8m0-5v5h5m-4 6a8 8 0 0 0 14 5l3-3m0 5v-5h-5",
 } as const;
 
 export function FamilyIcon({

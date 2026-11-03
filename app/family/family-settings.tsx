@@ -3,6 +3,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { FAMILY_THEMES } from "./themes";
+import { WorkspaceSelect } from "./workspace-select";
 import type {
   FamilySettingsProps,
   FamilySessionSummary,
@@ -16,6 +17,33 @@ const tabs = [
   ["voice", "语音"],
   ["account", "账户"],
   ["shortcuts", "快捷键"],
+] as const;
+const FONT_OPTIONS = [
+  { value: "small", label: "小" },
+  { value: "standard", label: "标准" },
+  { value: "large", label: "大" },
+] as const;
+const DENSITY_OPTIONS = [
+  { value: "comfortable", label: "舒适" },
+  { value: "compact", label: "紧凑" },
+] as const;
+const SEND_OPTIONS = [
+  { value: "enter", label: "Enter 发送" },
+  { value: "mod-enter", label: "Ctrl / ⌘ + Enter 发送" },
+] as const;
+const VOICE_OPTIONS = [
+  { value: "marin", label: "Marin" },
+  { value: "cedar", label: "Cedar" },
+  { value: "coral", label: "Coral" },
+  { value: "sage", label: "Sage" },
+] as const;
+const VAD_OPTIONS = [
+  { value: "natural", label: "自然停句" },
+  { value: "fast", label: "快速回应" },
+] as const;
+const RECORD_OPTIONS = [
+  { value: "hold", label: "按住说话，松开发送" },
+  { value: "tap", label: "点击开始，再点结束" },
 ] as const;
 type Tab = (typeof tabs)[number][0];
 const date = (value: string) => {
@@ -67,6 +95,12 @@ function SettingsDialog(props: FamilySettingsProps) {
     const trap = (event: KeyboardEvent) => {
       if (event.isComposing || event.keyCode === 229) return;
       if (event.key === "Escape") {
+        if (
+          dialog.current?.querySelector(
+            '[role="combobox"][aria-expanded="true"]',
+          )
+        )
+          return;
         event.preventDefault();
         event.stopPropagation();
         live.current.onClose();
@@ -277,55 +311,57 @@ function SettingsDialog(props: FamilySettingsProps) {
               <>
                 <h3>让聊天更顺手</h3>
                 <p className={styles.help}>这些偏好保存在当前设备。</p>
-                <label className={styles.row}>
+                <div className={styles.row}>
                   <span>文字大小</span>
-                  <select
-                    aria-label="文字大小"
-                    value={p.preferences.font}
-                    onChange={(e) =>
-                      p.onPreferencesChange({
-                        ...p.preferences,
-                        font: e.target.value as typeof p.preferences.font,
-                      })
-                    }
-                  >
-                    <option value="small">小</option>
-                    <option value="standard">标准</option>
-                    <option value="large">大</option>
-                  </select>
-                </label>
-                <label className={styles.row}>
+                  <div className={styles.rowControl}>
+                    <WorkspaceSelect
+                      label="文字大小"
+                      variant="field"
+                      value={p.preferences.font}
+                      options={FONT_OPTIONS}
+                      onChange={(value) =>
+                        p.onPreferencesChange({
+                          ...p.preferences,
+                          font: value as typeof p.preferences.font,
+                        })
+                      }
+                    />
+                  </div>
+                </div>
+                <div className={styles.row}>
                   <span>内容间距</span>
-                  <select
-                    aria-label="内容间距"
-                    value={p.preferences.density}
-                    onChange={(e) =>
-                      p.onPreferencesChange({
-                        ...p.preferences,
-                        density: e.target.value as typeof p.preferences.density,
-                      })
-                    }
-                  >
-                    <option value="comfortable">舒适</option>
-                    <option value="compact">紧凑</option>
-                  </select>
-                </label>
-                <label className={styles.row}>
+                  <div className={styles.rowControl}>
+                    <WorkspaceSelect
+                      label="内容间距"
+                      variant="field"
+                      value={p.preferences.density}
+                      options={DENSITY_OPTIONS}
+                      onChange={(value) =>
+                        p.onPreferencesChange({
+                          ...p.preferences,
+                          density: value as typeof p.preferences.density,
+                        })
+                      }
+                    />
+                  </div>
+                </div>
+                <div className={styles.row}>
                   <span>发送快捷键</span>
-                  <select
-                    aria-label="发送快捷键"
-                    value={p.preferences.sendKey}
-                    onChange={(e) =>
-                      p.onPreferencesChange({
-                        ...p.preferences,
-                        sendKey: e.target.value as typeof p.preferences.sendKey,
-                      })
-                    }
-                  >
-                    <option value="enter">Enter 发送</option>
-                    <option value="mod-enter">Ctrl / ⌘ + Enter 发送</option>
-                  </select>
-                </label>
+                  <div className={styles.rowControl}>
+                    <WorkspaceSelect
+                      label="发送快捷键"
+                      variant="field"
+                      value={p.preferences.sendKey}
+                      options={SEND_OPTIONS}
+                      onChange={(value) =>
+                        p.onPreferencesChange({
+                          ...p.preferences,
+                          sendKey: value as typeof p.preferences.sendKey,
+                        })
+                      }
+                    />
+                  </div>
+                </div>
                 <p className={styles.help}>
                   Shift + Enter 始终换行。输入法选字时不会发送。
                 </p>
@@ -389,51 +425,47 @@ function SettingsDialog(props: FamilySettingsProps) {
                     ? "通话或录音结束后可更改语音设置。"
                     : "连续语音中可以自然交谈，也可以开口打断。"}
                 </p>
-                <label className={styles.row}>
+                <div className={styles.row}>
                   <span>连续语音声音</span>
-                  <select
-                    aria-label="连续语音声音"
-                    value={p.voice}
-                    disabled={voiceLocked}
-                    onChange={(e) =>
-                      p.onVoiceChange(e.target.value as RealtimeVoice)
-                    }
-                  >
-                    {["marin", "cedar", "coral", "sage"].map((voice) => (
-                      <option key={voice} value={voice}>
-                        {voice[0].toUpperCase() + voice.slice(1)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className={styles.row}>
+                  <div className={styles.rowControl}>
+                    <WorkspaceSelect
+                      label="连续语音声音"
+                      variant="field"
+                      value={p.voice}
+                      disabled={voiceLocked}
+                      options={VOICE_OPTIONS}
+                      onChange={(value) =>
+                        p.onVoiceChange(value as RealtimeVoice)
+                      }
+                    />
+                  </div>
+                </div>
+                <div className={styles.row}>
                   <span>停句方式</span>
-                  <select
-                    aria-label="停句方式"
-                    value={p.vad}
-                    disabled={voiceLocked}
-                    onChange={(e) =>
-                      p.onVadChange(e.target.value as RealtimeVad)
-                    }
-                  >
-                    <option value="natural">自然停句</option>
-                    <option value="fast">快速回应</option>
-                  </select>
-                </label>
-                <label className={styles.row}>
+                  <div className={styles.rowControl}>
+                    <WorkspaceSelect
+                      label="停句方式"
+                      variant="field"
+                      value={p.vad}
+                      disabled={voiceLocked}
+                      options={VAD_OPTIONS}
+                      onChange={(value) => p.onVadChange(value as RealtimeVad)}
+                    />
+                  </div>
+                </div>
+                <div className={styles.row}>
                   <span>语音输入方式</span>
-                  <select
-                    aria-label="语音输入方式"
-                    value={p.tapRecord ? "tap" : "hold"}
-                    disabled={voiceLocked}
-                    onChange={(e) =>
-                      p.onTapRecordChange(e.target.value === "tap")
-                    }
-                  >
-                    <option value="hold">按住说话，松开发送</option>
-                    <option value="tap">点击开始，再点结束</option>
-                  </select>
-                </label>
+                  <div className={styles.rowControl}>
+                    <WorkspaceSelect
+                      label="语音输入方式"
+                      variant="field"
+                      value={p.tapRecord ? "tap" : "hold"}
+                      disabled={voiceLocked}
+                      options={RECORD_OPTIONS}
+                      onChange={(value) => p.onTapRecordChange(value === "tap")}
+                    />
+                  </div>
+                </div>
                 <label className={styles.check}>
                   <input
                     type="checkbox"

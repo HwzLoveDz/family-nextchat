@@ -1,4 +1,5 @@
 /** @jest-environment jsdom */
+import { chooseWorkspaceOption } from "./family-ui-select";
 
 import { jest } from "@jest/globals";
 import {
@@ -237,17 +238,19 @@ describe("family client account isolation", () => {
       screen.queryByRole("combobox", { name: "推理强度" }),
     ).not.toBeInTheDocument();
     fireEvent.change(composer, { target: { value: "强度切换时保留草稿" } });
-    fireEvent.change(screen.getByRole("combobox", { name: "选择模型" }), {
-      target: { value: "model-think" },
-    });
+    chooseWorkspaceOption(
+      screen.getByRole("combobox", { name: "选择模型" }),
+      "model-think",
+    );
     const effort = await screen.findByRole("combobox", { name: "推理强度" });
     expect(effort).toHaveValue("low");
+    fireEvent.click(effort);
     expect(
-      within(effort)
+      within(screen.getByRole("listbox", { name: "推理强度" }))
         .getAllByRole("option")
-        .map((item) => (item as HTMLOptionElement).value),
+        .map((item) => item.getAttribute("data-value")),
     ).toEqual(["low", "medium", "high"]);
-    fireEvent.change(effort, { target: { value: "high" } });
+    chooseWorkspaceOption(effort, "high");
     expect(effort).toHaveValue("high");
     expect(screen.getByRole("textbox", { name: "发送消息" })).toBe(composer);
     expect(composer).toHaveValue("强度切换时保留草稿");
@@ -260,9 +263,10 @@ describe("family client account isolation", () => {
           init.method !== "GET",
       ),
     ).toBe(false);
-    fireEvent.change(screen.getByRole("combobox", { name: "选择模型" }), {
-      target: { value: "model-fast" },
-    });
+    chooseWorkspaceOption(
+      screen.getByRole("combobox", { name: "选择模型" }),
+      "model-fast",
+    );
     await waitFor(() =>
       expect(
         screen.queryByRole("combobox", { name: "推理强度" }),
@@ -285,12 +289,13 @@ describe("family client account isolation", () => {
       render(<FamilyApp />);
       const composer = await screen.findByRole("textbox", { name: "发送消息" });
       await waitFor(() => expect(composer).toBeEnabled());
-      fireEvent.change(screen.getByRole("combobox", { name: "选择模型" }), {
-        target: { value: "model-think" },
-      });
-      fireEvent.change(
+      chooseWorkspaceOption(
+        screen.getByRole("combobox", { name: "选择模型" }),
+        "model-think",
+      );
+      chooseWorkspaceOption(
         await screen.findByRole("combobox", { name: "推理强度" }),
-        { target: { value: effort } },
+        effort,
       );
       fireEvent.change(composer, { target: { value: "明确选择强度后发送" } });
       fireEvent.click(screen.getByRole("button", { name: "发送 ↑" }));
@@ -324,9 +329,10 @@ describe("family client account isolation", () => {
       await screen.findByRole("combobox", { name: "推理强度" }),
     ).toHaveValue("high");
     fireEvent.click(screen.getByRole("button", { name: "＋ 新聊天" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "选择模型" }), {
-      target: { value: "model-think" },
-    });
+    chooseWorkspaceOption(
+      screen.getByRole("combobox", { name: "选择模型" }),
+      "model-think",
+    );
     expect(
       await screen.findByRole("combobox", { name: "推理强度" }),
     ).toHaveValue("low");

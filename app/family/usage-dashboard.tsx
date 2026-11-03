@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { WorkspaceSelect } from "./workspace-select";
 import type {
   UsageDashboardCounters,
   UsageDashboardData,
@@ -51,6 +52,10 @@ const measure = (item: UsageDashboardCounters, metric: Metric) =>
     : item.cost?.estimatedUSD ?? 0;
 const measureText = (value: number, metric: Metric) =>
   metric === "cost" ? usd(value) : number(value);
+const rowText = (item: UsageDashboardCounters, metric: Metric) =>
+  metric === "cost" && item.cost?.estimatedUSD == null
+    ? "—"
+    : measureText(measure(item, metric), metric);
 const metricLabel = (metric: Metric) =>
   metric === "tokens"
     ? "Token"
@@ -83,7 +88,6 @@ function UsageDashboardSession(props: UsageDashboardProps) {
     [selectedModel, setSelectedModel] = useState<string | null>(null);
   const requested = useRef({ days, member });
   requested.current = { days, member };
-  const id = useId();
   const canRead = () =>
     alive.current && !live.current.locked && live.current.isCurrent();
   const load = async () => {
@@ -176,6 +180,12 @@ function UsageDashboardSession(props: UsageDashboardProps) {
   const trendTotal =
     matching?.daily.reduce((sum, point) => sum + measure(point, metric), 0) ??
     0;
+  const trendText =
+    metric === "cost" &&
+    matching?.daily.some((point) => point.requests > 0) &&
+    !matching.daily.some((point) => (point.cost?.pricedRequests ?? 0) > 0)
+      ? "—"
+      : measureText(trendTotal, metric);
   const maxDay = Math.max(
     1,
     ...(matching?.daily.map((item) => measure(item, metric)) ?? []),
@@ -203,49 +213,46 @@ function UsageDashboardSession(props: UsageDashboardProps) {
         </button>
       </div>
       <div className={styles.filters}>
-        <label htmlFor={`${id}-days`}>
-          时间范围
-          <select
-            id={`${id}-days`}
-            aria-label="用量时间范围"
-            value={days}
+        <div className={styles.filterControl}>
+          <WorkspaceSelect
+            label="用量时间范围"
+            value={String(days)}
             disabled={props.locked}
-            onChange={(e) => {
+            variant="field"
+            options={[
+              { value: "all", label: "全部" },
+              { value: "7", label: "最近 7 天" },
+              { value: "30", label: "最近 30 天" },
+              { value: "90", label: "最近 90 天" },
+            ]}
+            onChange={(value) => {
               if (!canRead()) return;
               setDays(
-                (e.target.value === "all"
-                  ? "all"
-                  : Number(e.target.value)) as UsageDashboardDays,
+                (value === "all" ? "all" : Number(value)) as UsageDashboardDays,
               );
             }}
-          >
-            <option value="all">全部</option>
-            <option value={7}>最近 7 天</option>
-            <option value={30}>最近 30 天</option>
-            <option value={90}>最近 90 天</option>
-          </select>
-        </label>
+          />
+        </div>
         {props.admin ? (
-          <label htmlFor={`${id}-member`}>
-            成员
-            <select
-              id={`${id}-member`}
-              aria-label="用量成员"
+          <div className={styles.filterControl}>
+            <WorkspaceSelect
+              label="用量成员"
               value={member}
               disabled={props.locked}
-              onChange={(e) => {
+              variant="field"
+              options={[
+                { value: "", label: "全部成员" },
+                ...(data?.members.map((person) => ({
+                  value: person.id,
+                  label: person.name,
+                })) ?? []),
+              ]}
+              onChange={(value) => {
                 if (!canRead()) return;
-                setMember(e.target.value);
+                setMember(value);
               }}
-            >
-              <option value="">全部成员</option>
-              {data?.members.map((person) => (
-                <option key={person.id} value={person.id}>
-                  {person.name}
-                </option>
-              ))}
-            </select>
-          </label>
+            />
+          </div>
         ) : null}
       </div>
       {error ? (
@@ -330,6 +337,7 @@ function UsageDashboardSession(props: UsageDashboardProps) {
               </div>
               <svg
                 className={styles.trend}
+                style={{ filter: "none" }}
                 viewBox="0 0 660 220"
                 role="img"
                 aria-label={`最近${matching.trendDays}天${metricLabel(
@@ -338,7 +346,7 @@ function UsageDashboardSession(props: UsageDashboardProps) {
               >
                 <title>{`最近${matching.trendDays}天${metricLabel(
                   metric,
-                )}，共${measureText(trendTotal, metric)}`}</title>
+                )}，共${trendText}`}</title>
                 {[0, 1, 2, 3].map((i) => (
                   <line
                     key={i}
@@ -355,8 +363,8 @@ function UsageDashboardSession(props: UsageDashboardProps) {
                   const x = 40 + index * width;
                   return (
                     <g key={point.date}>
-                      <title>{`${point.date}：${measureText(
-                        measure(point, metric),
+                      <title>{`${point.date}：${rowText(
+                        point,
                         metric,
                       )}；输入${number(point.inputTokens)}，输出${number(
                         point.outputTokens,
@@ -441,10 +449,12 @@ function UsageDashboardSession(props: UsageDashboardProps) {
                 <h3>模型分布</h3>
                 <small>{metricLabel(metric)}</small>
               </div>
-              <div className={styles.donutWrap}>
+              <div className={`${styles.donutWrap} no-dark`}>
                 <svg
                   viewBox="0 0 230 230"
                   className={styles.donut}
+                  // The app's legacy dark-mode SVG inversion erases chart colors.
+                  style={{ filter: "none" }}
                   role="img"
                   aria-label={`模型${metricLabel(metric)}占比`}
                 >
@@ -498,7 +508,7 @@ function UsageDashboardSession(props: UsageDashboardProps) {
                     textAnchor="middle"
                     className={styles.donutTotal}
                   >
-                    {measureText(total, metric)}
+                    {rowText(matching.summary, metric)}
                   </text>
                   <text
                     x={115}
@@ -515,7 +525,7 @@ function UsageDashboardSession(props: UsageDashboardProps) {
                   {metric === "tokens"
                     ? "本期暂无 Token 记录。"
                     : metric === "cost"
-                    ? "本期暂无费用记录。"
+                    ? "本期暂无已计价记录。"
                     : "本期暂无请求记录。"}
                 </p>
               ) : null}
@@ -536,9 +546,11 @@ function UsageDashboardSession(props: UsageDashboardProps) {
                       />
                       <span>{model.label}</span>
                       <b>
-                        {measureText(measure(model, metric), metric)}
+                        {rowText(model, metric)}
                         <small>
-                          {total > 0
+                          {total > 0 &&
+                          (metric !== "cost" ||
+                            model.cost?.estimatedUSD != null)
                             ? `${(
                                 (measure(model, metric) / total) *
                                 100
@@ -576,9 +588,7 @@ function UsageDashboardSession(props: UsageDashboardProps) {
                       >
                         {person.name}
                       </button>
-                      <span>
-                        {measureText(measure(person, metric), metric)}
-                      </span>
+                      <span>{rowText(person, metric)}</span>
                     </div>
                     <div className={styles.track}>
                       <i

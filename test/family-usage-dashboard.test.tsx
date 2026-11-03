@@ -1,4 +1,5 @@
 /** @jest-environment jsdom */
+import { chooseWorkspaceOption } from "./family-ui-select";
 import { jest } from "@jest/globals";
 import {
   act,
@@ -9,6 +10,7 @@ import {
   within,
 } from "@testing-library/react";
 import { UsageDashboard } from "../app/family/usage-dashboard";
+import { FAMILY_THEMES } from "../app/family/themes";
 import type {
   UsageDashboardCounters,
   UsageDashboardData,
@@ -144,13 +146,15 @@ test("administrator filters member and range, switches chart units, and sees com
   expect(
     screen.getByRole("region", { name: "成员用量比较" }),
   ).toBeInTheDocument();
-  fireEvent.change(screen.getByRole("combobox", { name: "用量时间范围" }), {
-    target: { value: "7" },
-  });
+  chooseWorkspaceOption(
+    screen.getByRole("combobox", { name: "用量时间范围" }),
+    "7",
+  );
   await waitFor(() => expect(p.onLoad).toHaveBeenLastCalledWith(7, undefined));
-  fireEvent.change(screen.getByRole("combobox", { name: "用量成员" }), {
-    target: { value: "member-b" },
-  });
+  chooseWorkspaceOption(
+    screen.getByRole("combobox", { name: "用量成员" }),
+    "member-b",
+  );
   await waitFor(() => expect(p.onLoad).toHaveBeenLastCalledWith(7, "member-b"));
   await screen.findByRole("img", { name: /最近7天/ });
   fireEvent.click(
@@ -227,9 +231,10 @@ test("old filter results are dropped and latest filter is loaded once in-flight 
   p.onLoad.mockImplementationOnce(() => pending.promise);
   render(<UsageDashboard {...p} />);
   expect(p.onLoad).toHaveBeenCalledTimes(1);
-  fireEvent.change(screen.getByRole("combobox", { name: "用量时间范围" }), {
-    target: { value: "7" },
-  });
+  chooseWorkspaceOption(
+    screen.getByRole("combobox", { name: "用量时间范围" }),
+    "7",
+  );
   expect(p.onLoad).toHaveBeenCalledTimes(1);
   await act(async () => pending.resolve(data("all", true, undefined, 99999)));
   await waitFor(() => expect(p.onLoad).toHaveBeenLastCalledWith(7, undefined));
@@ -256,9 +261,10 @@ test("live identity gate blocks actions before rerender and locked pages do not 
   const calls = p.onLoad.mock.calls.length;
   current = false;
   fireEvent.click(screen.getByRole("button", { name: "刷新用量" }));
-  fireEvent.change(screen.getByRole("combobox", { name: "用量时间范围" }), {
-    target: { value: "7" },
-  });
+  chooseWorkspaceOption(
+    screen.getByRole("combobox", { name: "用量时间范围" }),
+    "7",
+  );
   expect(p.onLoad).toHaveBeenCalledTimes(calls);
   expect(screen.getByRole("combobox", { name: "用量时间范围" })).toHaveValue(
     "all",
@@ -312,11 +318,130 @@ test("member labels render as plain text and model legend remains keyboard-acces
   const p = { ...props(true), onLoad: jest.fn(async () => value) };
   const { container } = render(<UsageDashboard {...p} />);
   await screen.findAllByText("12,345");
+  fireEvent.click(screen.getByRole("combobox", { name: "用量成员" }));
   expect(container.querySelector("img")).toBeNull();
   expect(
     screen.getByRole("option", { name: '<img src=x onerror="alert(1)">' }),
   ).toBeInTheDocument();
+  fireEvent.keyDown(screen.getByRole("combobox", { name: "用量成员" }), {
+    key: "Escape",
+  });
   const legend = screen.getByRole("button", { name: /gpt-4o-mini/ });
   fireEvent.click(legend);
   expect(legend).toHaveAttribute("aria-pressed", "true");
+});
+
+test.each(FAMILY_THEMES.map((theme) => [theme.id, theme] as const))(
+  "%s preserves distinct donut segment colors against legacy SVG inversion",
+  async (_themeId, theme) => {
+    const value = data();
+    value.models = [
+      {
+        ...value.models[0],
+        inputTokens: 1200,
+        outputTokens: 7030,
+        totalTokens: 8230,
+      },
+      {
+        ...value.models[0],
+        id: "reported:gpt-6-luna",
+        model: "gpt-6-luna",
+        label: "gpt-6-luna",
+        source: "reported",
+        inputTokens: 1145,
+        outputTokens: 2970,
+        totalTokens: 4115,
+      },
+    ];
+    const legacy = document.createElement("style");
+    legacy.textContent =
+      ".legacy-chart-dark div:not(.no-dark) > svg { filter: invert(0.5); }";
+    document.head.append(legacy);
+    try {
+      const p = { ...props(), onLoad: jest.fn(async () => value) };
+      render(
+        <div
+          className="legacy-chart-dark"
+          data-family-theme={theme.id}
+          style={theme.variables}
+        >
+          <UsageDashboard {...p} />
+        </div>,
+      );
+      const donut = await screen.findByRole("img", { name: "模型Token占比" });
+      expect(window.getComputedStyle(donut).filter).toBe("none");
+      const segments = Array.from(donut.querySelectorAll("circle[pathLength]"));
+      expect(segments).toHaveLength(2);
+      expect(
+        new Set(segments.map((segment) => segment.getAttribute("stroke"))).size,
+      ).toBe(2);
+      let totalDash = 0;
+      for (const [index, segment] of segments.entries()) {
+        const [dash, gap] = segment
+          .getAttribute("stroke-dasharray")!
+          .split(" ")
+          .map(Number);
+        expect(dash).toBeGreaterThan(0);
+        expect(gap).toBeGreaterThan(0);
+        totalDash += dash;
+        const legend = screen.getByRole("button", {
+          name: new RegExp(value.models[index].label),
+        });
+        const color = document.createElement("span");
+        color.style.backgroundColor = segment.getAttribute("stroke")!;
+        expect(legend.querySelector("i")!.style.background).toBe(
+          color.style.backgroundColor,
+        );
+      }
+      expect(totalDash).toBeCloseTo(100);
+      expect(donut.querySelector("circle:not([pathLength])")).toHaveAttribute(
+        "stroke",
+        "var(--line)",
+      );
+    } finally {
+      legacy.remove();
+    }
+  },
+);
+
+test("unknown cost keeps an empty grey ring and unknown values instead of a zero charge", async () => {
+  const value = data();
+  value.summary = {
+    ...zeros(),
+    requests: 3,
+    unknownRequests: 3,
+    cost: {
+      estimatedUSD: null,
+      pricedRequests: 0,
+      unpricedRequests: 3,
+      priceVersion: "2026-11-03",
+    },
+  };
+  value.models = [{ ...value.models[0], ...value.summary }];
+  value.daily = value.daily.map((point, index) => ({
+    ...point,
+    ...(index ? zeros() : value.summary),
+  }));
+  const p = { ...props(), onLoad: jest.fn(async () => value) };
+  render(<UsageDashboard {...p} />);
+  await screen.findByText("0 条已计价 · 3 条未计价");
+  fireEvent.click(
+    within(screen.getByRole("group", { name: "图表统计口径" })).getByRole(
+      "button",
+      { name: "费用" },
+    ),
+  );
+  const donut = screen.getByRole("img", { name: "模型费用（USD）占比" });
+  expect(donut.querySelectorAll("circle")).toHaveLength(1);
+  expect(donut.querySelector("circle")).toHaveAttribute(
+    "stroke",
+    "var(--line)",
+  );
+  expect(donut.querySelector("text")).toHaveTextContent("—");
+  expect(
+    screen.getByRole("button", { name: /gpt-4o-mini/ }),
+  ).not.toHaveTextContent(/\$0/);
+  expect(
+    screen.getByRole("button", { name: /gpt-4o-mini/ }),
+  ).not.toHaveTextContent(/0\.0%/);
 });

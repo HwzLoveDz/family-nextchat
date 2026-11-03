@@ -1576,13 +1576,14 @@
   position: absolute;
   right: 0;
   top: calc(100% + 6px);
-  width: 200px;
-  z-index: 20;
+  width: 220px;
+  max-width: calc(100vw - 24px);
+  z-index: 40;
   background: var(--paper);
   border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 5px;
-  box-shadow: 0 8px 30px var(--app-shadow);
+  border-radius: 12px;
+  padding: 6px;
+  box-shadow: 0 12px 36px var(--app-shadow);
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -1596,11 +1597,33 @@
   background: transparent;
   width: 100%;
   min-height: 36px;
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 450;
   padding: 8px 10px;
+  border: 0;
+  border-radius: 7px;
+  line-height: 1.4;
+  box-shadow: none;
 }
-.shell .menuPanel button:hover {
+.shell .menuPanel button:hover:not(:disabled) {
   background: var(--hover);
+}
+.shell .menuPanel button:disabled {
+  opacity: 0.4;
+}
+.menuPanel button svg {
+  color: var(--muted);
+  filter: none;
+}
+.menuSeparator {
+  height: 1px;
+  background: var(--line);
+  margin: 4px 6px;
+}
+@media (pointer: coarse) {
+  .shell .menuPanel button {
+    min-height: 44px;
+  }
 }
 .messages {
   padding: 24px max(24px, calc((100% - 800px) / 2)) 20px;
@@ -2237,7 +2260,7 @@
   outline-offset: 3px;
 }
 .menuPanel.chatTools {
-  width: 200px;
+  width: 220px;
 }
 .sidebarTop {
   flex-direction: column;

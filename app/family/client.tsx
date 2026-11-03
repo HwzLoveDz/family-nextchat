@@ -12,6 +12,7 @@ import { FamilyMarkdown } from "./message-markdown";
 import { FamilySettings } from "./family-settings";
 import { FamilyIcon } from "./icons";
 import { modelDescription } from "./model-descriptions";
+import { WorkspaceSelect } from "./workspace-select";
 import { ReasoningEffortPicker } from "./reasoning-effort-picker";
 import {
   DEFAULT_REASONING_EFFORT,
@@ -2660,6 +2661,34 @@ export function FamilyApp() {
               <details
                 ref={conversationMenu}
                 className={styles.conversationMenu}
+                onKeyDown={(event) => {
+                  if (
+                    !event.currentTarget.open ||
+                    !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)
+                  )
+                    return;
+                  const buttons = [
+                    ...event.currentTarget.querySelectorAll<HTMLButtonElement>(
+                      "button:not(:disabled)",
+                    ),
+                  ];
+                  if (!buttons.length) return;
+                  const current = buttons.indexOf(
+                    document.activeElement as HTMLButtonElement,
+                  );
+                  const next =
+                    event.key === "Home"
+                      ? 0
+                      : event.key === "End"
+                      ? buttons.length - 1
+                      : event.key === "ArrowDown"
+                      ? (current + 1) % buttons.length
+                      : current <= 0
+                      ? buttons.length - 1
+                      : current - 1;
+                  event.preventDefault();
+                  buttons[next].focus();
+                }}
               >
                 <summary aria-label="对话操作" title="对话操作">
                   <FamilyIcon name="dots" />
@@ -2686,6 +2715,7 @@ export function FamilyApp() {
                       })
                     }
                   >
+                    <FamilyIcon name="pin" size={16} />
                     {activeChat?.pinnedAt ? "取消置顶" : "置顶对话"}
                   </button>
                   <button
@@ -2699,6 +2729,7 @@ export function FamilyApp() {
                       )
                     }
                   >
+                    <FamilyIcon name="edit" size={16} />
                     重命名
                   </button>
                   <button
@@ -2706,6 +2737,7 @@ export function FamilyApp() {
                     disabled={turnLocked || !activeChat}
                     onClick={() => void run(exportChat)}
                   >
+                    <FamilyIcon name="download" size={16} />
                     导出 Markdown
                   </button>
                   <button
@@ -2743,13 +2775,16 @@ export function FamilyApp() {
                       })
                     }
                   >
+                    <FamilyIcon name="refresh" size={16} />
                     刷新
                   </button>
+                  <div className={styles.menuSeparator} role="separator" />
                   <button
                     className={styles.secondary}
                     disabled={turnLocked || !activeChat}
                     onClick={() => setArchiveConfirm(true)}
                   >
+                    <FamilyIcon name="archive" size={16} />
                     归档对话
                   </button>
                 </div>
@@ -3793,12 +3828,26 @@ export function FamilyApp() {
                       chosenModel?.reasoning ? styles.withReasoning : ""
                     }`}
                   >
-                    <label className={styles.modelPicker}>
-                      <span>模型</span>
-                      <select
-                        aria-label="选择模型"
-                        title={modelDescription(selectedModel) || "选择模型"}
+                    <div className={styles.modelPicker}>
+                      <WorkspaceSelect
+                        label="选择模型"
                         value={selectedModel}
+                        width={380}
+                        placeholder={
+                          modelLoading
+                            ? "正在加载模型…"
+                            : selectedModel && !chosenModel
+                            ? `${selectedModel}（不可用）`
+                            : "请选择模型"
+                        }
+                        options={models.map((model) => ({
+                          value: model.id,
+                          label: model.name,
+                          description:
+                            modelDescription(model.id) || model.description,
+                          group:
+                            model.kind === "image" ? "图片生成" : "文字聊天",
+                        }))}
                         disabled={
                           sending ||
                           working ||
@@ -3809,42 +3858,9 @@ export function FamilyApp() {
                           draftAttachments.preparing ||
                           models.length === 0
                         }
-                        onChange={(event) =>
-                          void run(() => changeModel(event.target.value))
-                        }
-                      >
-                        {!chosenModel ? (
-                          <option value={selectedModel}>
-                            {modelLoading
-                              ? "正在加载模型…"
-                              : selectedModel
-                              ? `${selectedModel}（不可用，请更换）`
-                              : "请选择模型"}
-                          </option>
-                        ) : null}
-                        {[
-                          { label: "文字聊天", image: false },
-                          { label: "图片生成", image: true },
-                        ].map((group) => {
-                          const options = models.filter(
-                            (model) => (model.kind === "image") === group.image,
-                          );
-                          return options.length ? (
-                            <optgroup key={group.label} label={group.label}>
-                              {options.map((model) => (
-                                <option key={model.id} value={model.id}>
-                                  {model.name}
-                                  {model.reasoning ? " · 推理" : ""}
-                                  {modelDescription(model.id)
-                                    ? ` · ${modelDescription(model.id)}`
-                                    : ""}
-                                </option>
-                              ))}
-                            </optgroup>
-                          ) : null;
-                        })}
-                      </select>
-                    </label>
+                        onChange={(value) => void run(() => changeModel(value))}
+                      />
+                    </div>
                     {chosenModel?.reasoning ? (
                       <ReasoningEffortPicker
                         value={reasoningEffort}

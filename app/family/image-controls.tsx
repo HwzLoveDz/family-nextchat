@@ -7,6 +7,7 @@ import {
   type FamilyImageSize,
 } from "./image-types";
 import styles from "./image-controls.module.scss";
+import { WorkspaceSelect } from "./workspace-select";
 
 export interface ImageGenerationControlsProps {
   options: FamilyImageOptions;
@@ -22,34 +23,40 @@ export function ImageGenerationControls({
   return (
     <section className={styles.controls} aria-label="图片生成设置">
       <div className={styles.row}>
-        <label className={styles.field}>
+        <div className={styles.field}>
           <span>图片比例</span>
-          <select
-            aria-label="图片比例"
+          <WorkspaceSelect
+            label="图片比例"
+            variant="field"
             value={options.size}
             disabled={disabled}
-            onChange={(event) => {
-              const size = event.currentTarget.value;
+            options={[
+              { value: "1024x1024", label: "正方形 · 1:1" },
+              { value: "1536x1024", label: "横图 · 3:2" },
+              { value: "1024x1536", label: "竖图 · 2:3" },
+            ]}
+            onChange={(size) => {
               if (
                 !disabled &&
                 (FAMILY_IMAGE_SIZES as readonly string[]).includes(size)
               )
                 onChange({ ...options, size: size as FamilyImageSize });
             }}
-          >
-            <option value="1024x1024">正方形 · 1:1</option>
-            <option value="1536x1024">横图 · 3:2</option>
-            <option value="1024x1536">竖图 · 2:3</option>
-          </select>
-        </label>
-        <label className={styles.field}>
+          />
+        </div>
+        <div className={styles.field}>
           <span>图片质量</span>
-          <select
-            aria-label="图片质量"
+          <WorkspaceSelect
+            label="图片质量"
+            variant="field"
             value={options.quality}
             disabled={disabled}
-            onChange={(event) => {
-              const quality = event.currentTarget.value;
+            options={[
+              { value: "low", label: "快速" },
+              { value: "medium", label: "标准" },
+              { value: "high", label: "精细" },
+            ]}
+            onChange={(quality) => {
               if (
                 !disabled &&
                 (FAMILY_IMAGE_QUALITIES as readonly string[]).includes(quality)
@@ -59,12 +66,8 @@ export function ImageGenerationControls({
                   quality: quality as FamilyImageQuality,
                 });
             }}
-          >
-            <option value="low">快速</option>
-            <option value="medium">标准</option>
-            <option value="high">精细</option>
-          </select>
-        </label>
+          />
+        </div>
       </div>
       <p className={styles.help}>
         每次生成 1 张，计入 API 额度。质量会影响耗时和消耗。

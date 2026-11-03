@@ -194,10 +194,25 @@ export function ThemeSettings({
                       theme.id === option.id ? styles.selected : ""
                     }`}
                   >
-                    <span className={styles.swatches} aria-hidden="true">
-                      {option.swatches.map((color, index) => (
-                        <span key={index} style={{ backgroundColor: color }} />
-                      ))}
+                    <span
+                      className={styles.preview}
+                      aria-hidden="true"
+                      style={{
+                        background: option.variables["--paper"],
+                        borderColor: option.variables["--line"],
+                      }}
+                    >
+                      <i
+                        style={{
+                          background: option.variables["--sidebar-bg"],
+                        }}
+                      />
+                      <b
+                        style={{ background: option.variables["--user-bg"] }}
+                      />
+                      <em
+                        style={{ background: option.variables["--accent"] }}
+                      />
                     </span>
                     <span className={styles.choiceTitle}>
                       <strong>{option.label}</strong>

@@ -1,4 +1,5 @@
 /** @jest-environment jsdom */
+import { chooseWorkspaceOption } from "./family-ui-select";
 import { jest } from "@jest/globals";
 import {
   act,
@@ -295,9 +296,13 @@ async function open() {
   return view;
 }
 async function chooseImage() {
-  fireEvent.change(screen.getByRole("combobox", { name: "选择模型" }), {
-    target: { value: imageIDs[0] },
-  });
+  await waitFor(() =>
+    expect(screen.getByRole("combobox", { name: "选择模型" })).toBeEnabled(),
+  );
+  chooseWorkspaceOption(
+    screen.getByRole("combobox", { name: "选择模型" }),
+    imageIDs[0],
+  );
   await waitFor(() =>
     expect(screen.getByRole("combobox", { name: "图片比例" })).toBeEnabled(),
   );
@@ -306,6 +311,7 @@ async function chooseImage() {
 test("catalog preserves ten chat models and groups image models; selection/options never generate and block both voice scopes", async () => {
   await open();
   const picker = screen.getByRole("combobox", { name: "选择模型" });
+  fireEvent.click(picker);
   expect(
     within(screen.getByRole("group", { name: "文字聊天" })).getAllByRole(
       "option",
@@ -322,12 +328,14 @@ test("catalog preserves ten chat models and groups image models; selection/optio
   expect(realtimeScope.getScope().canStart).toBe(true);
   fireEvent.change(composer, { target: { value: "还未发送的图像描述" } });
   await chooseImage();
-  fireEvent.change(screen.getByRole("combobox", { name: "图片比例" }), {
-    target: { value: "1536x1024" },
-  });
-  fireEvent.change(screen.getByRole("combobox", { name: "图片质量" }), {
-    target: { value: "high" },
-  });
+  chooseWorkspaceOption(
+    screen.getByRole("combobox", { name: "图片比例" }),
+    "1536x1024",
+  );
+  chooseWorkspaceOption(
+    screen.getByRole("combobox", { name: "图片质量" }),
+    "high",
+  );
   expect(screen.getByRole("textbox", { name: "发送消息" })).toBe(composer);
   expect(screen.getByLabelText("选择附件文件")).toBe(fileInput);
   expect(composer).toHaveValue("还未发送的图像描述");
@@ -339,7 +347,7 @@ test("catalog preserves ten chat models and groups image models; selection/optio
     screen.getByRole("button", { name: "按住说话，松开发送，移出取消" }),
   ).toBeDisabled();
   expect(requests()).toHaveLength(0);
-  fireEvent.change(picker, { target: { value: textIDs[0] } });
+  chooseWorkspaceOption(picker, textIDs[0]);
   await waitFor(() =>
     expect(
       screen.queryByRole("combobox", { name: "图片比例" }),
@@ -368,12 +376,14 @@ test("explicit generation sends image options and renders only its authenticated
   };
   await open();
   await chooseImage();
-  fireEvent.change(screen.getByRole("combobox", { name: "图片比例" }), {
-    target: { value: "1024x1536" },
-  });
-  fireEvent.change(screen.getByRole("combobox", { name: "图片质量" }), {
-    target: { value: "low" },
-  });
+  chooseWorkspaceOption(
+    screen.getByRole("combobox", { name: "图片比例" }),
+    "1024x1536",
+  );
+  chooseWorkspaceOption(
+    screen.getByRole("combobox", { name: "图片质量" }),
+    "low",
+  );
   fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
     target: { value: userMessage.content },
   });
@@ -406,12 +416,14 @@ test("explicit generation sends image options and renders only its authenticated
 test("text sends never inherit hidden image options", async () => {
   await open();
   await chooseImage();
-  fireEvent.change(screen.getByRole("combobox", { name: "图片质量" }), {
-    target: { value: "high" },
-  });
-  fireEvent.change(screen.getByRole("combobox", { name: "选择模型" }), {
-    target: { value: textIDs[0] },
-  });
+  chooseWorkspaceOption(
+    screen.getByRole("combobox", { name: "图片质量" }),
+    "high",
+  );
+  chooseWorkspaceOption(
+    screen.getByRole("combobox", { name: "选择模型" }),
+    textIDs[0],
+  );
   await waitFor(() =>
     expect(screen.getByRole("button", { name: "发送 ↑" })).toBeInTheDocument(),
   );
@@ -437,12 +449,14 @@ test.each(["edit", "retry", "regenerate"] as const)(
       },
     ];
     await open();
-    fireEvent.change(screen.getByRole("combobox", { name: "图片比例" }), {
-      target: { value: "1536x1024" },
-    });
-    fireEvent.change(screen.getByRole("combobox", { name: "图片质量" }), {
-      target: { value: "high" },
-    });
+    chooseWorkspaceOption(
+      screen.getByRole("combobox", { name: "图片比例" }),
+      "1536x1024",
+    );
+    chooseWorkspaceOption(
+      screen.getByRole("combobox", { name: "图片质量" }),
+      "high",
+    );
     if (mode === "edit") {
       fireEvent.click(screen.getByRole("button", { name: "编辑上一条提问" }));
       fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
@@ -480,9 +494,10 @@ test("routine identity probes preserve editor/file DOM, draft image options and 
   });
   await screen.findByRole("button", { name: "移除附件 private.txt" });
   await chooseImage();
-  fireEvent.change(screen.getByRole("combobox", { name: "图片比例" }), {
-    target: { value: "1536x1024" },
-  });
+  chooseWorkspaceOption(
+    screen.getByRole("combobox", { name: "图片比例" }),
+    "1536x1024",
+  );
   expect(
     screen.getByText("图片生成暂不支持附件，请先移除附件。"),
   ).toBeInTheDocument();
@@ -532,9 +547,10 @@ test("opening and explicit refresh restore saved image settings; a new chat rese
     "1024x1536",
   );
   expect(screen.getByRole("combobox", { name: "图片质量" })).toHaveValue("low");
-  fireEvent.change(screen.getByRole("combobox", { name: "图片比例" }), {
-    target: { value: "1536x1024" },
-  });
+  chooseWorkspaceOption(
+    screen.getByRole("combobox", { name: "图片比例" }),
+    "1536x1024",
+  );
   fireEvent.click(screen.getByLabelText("对话操作"));
   fireEvent.click(screen.getByRole("button", { name: "刷新", exact: true }));
   await waitFor(() =>
@@ -543,9 +559,10 @@ test("opening and explicit refresh restore saved image settings; a new chat rese
     ),
   );
   fireEvent.click(screen.getByRole("button", { name: /新聊天/ }));
-  fireEvent.change(screen.getByRole("combobox", { name: "选择模型" }), {
-    target: { value: imageIDs[0] },
-  });
+  chooseWorkspaceOption(
+    screen.getByRole("combobox", { name: "选择模型" }),
+    imageIDs[0],
+  );
   await waitFor(() =>
     expect(screen.getByRole("combobox", { name: "图片比例" })).toHaveValue(
       "1024x1024",

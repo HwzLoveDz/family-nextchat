@@ -1,4 +1,5 @@
 /** @jest-environment jsdom */
+import { chooseWorkspaceOption } from "./family-ui-select";
 import { jest } from "@jest/globals";
 import {
   act,
@@ -374,9 +375,10 @@ test("image option controls preserve the other enum and never generate by themse
   expect(screen.getByRole("combobox", { name: "图片比例" })).toHaveValue(
     "1024x1024",
   );
-  fireEvent.change(screen.getByRole("combobox", { name: "图片比例" }), {
-    target: { value: "1536x1024" },
-  });
+  chooseWorkspaceOption(
+    screen.getByRole("combobox", { name: "图片比例" }),
+    "1536x1024",
+  );
   expect(change).toHaveBeenLastCalledWith({
     size: "1536x1024",
     quality: "medium",
@@ -388,15 +390,18 @@ test("image option controls preserve the other enum and never generate by themse
       disabled={false}
     />,
   );
-  fireEvent.change(screen.getByRole("combobox", { name: "图片质量" }), {
-    target: { value: "high" },
-  });
+  chooseWorkspaceOption(
+    screen.getByRole("combobox", { name: "图片质量" }),
+    "high",
+  );
   expect(change).toHaveBeenLastCalledWith({
     size: "1536x1024",
     quality: "high",
   });
   expect(screen.getByText(/每次生成 1 张/)).toBeInTheDocument();
-  expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "生成图片" }),
+  ).not.toBeInTheDocument();
   expect(fetchMock).not.toHaveBeenCalled();
 });
 
@@ -411,7 +416,7 @@ test("disabled or invalid image selections cannot dispatch setting changes", () 
   );
   const size = screen.getByRole("combobox", { name: "图片比例" });
   expect(size).toBeDisabled();
-  fireEvent.change(size, { target: { value: "1536x1024" } });
+  chooseWorkspaceOption(size, "1536x1024");
   expect(change).not.toHaveBeenCalled();
   rerender(
     <ImageGenerationControls
@@ -420,11 +425,18 @@ test("disabled or invalid image selections cannot dispatch setting changes", () 
       disabled={false}
     />,
   );
-  fireEvent.change(screen.getByRole("combobox", { name: "图片比例" }), {
-    target: { value: "untrusted" },
-  });
-  fireEvent.change(screen.getByRole("combobox", { name: "图片质量" }), {
-    target: { value: "max" },
-  });
+  fireEvent.click(screen.getByRole("combobox", { name: "图片比例" }));
+  expect(
+    screen
+      .getAllByRole("option")
+      .some((option) => option.getAttribute("data-value") === "untrusted"),
+  ).toBe(false);
+  fireEvent.click(screen.getByRole("combobox", { name: "图片比例" }));
+  fireEvent.click(screen.getByRole("combobox", { name: "图片质量" }));
+  expect(
+    screen
+      .getAllByRole("option")
+      .some((option) => option.getAttribute("data-value") === "max"),
+  ).toBe(false);
   expect(change).not.toHaveBeenCalled();
 });

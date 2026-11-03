@@ -3,6 +3,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import type { RealtimeController, RealtimePhase } from "./use-family-realtime";
 import type { RealtimeVad, RealtimeVoice } from "./realtime-types";
 import styles from "./realtime-panel.module.scss";
+import { WorkspaceSelect } from "./workspace-select";
 
 const labels: Record<RealtimePhase, string> = {
   idle: "准备开始",
@@ -56,34 +57,32 @@ export function RealtimePanel({
           <details className={styles.settings}>
             <summary>声音与停句</summary>
             <div className={styles.options}>
-              <label htmlFor={`${id}-voice`}>
+              <div>
                 声音
-                <select
-                  id={`${id}-voice`}
+                <WorkspaceSelect
+                  label="声音"
+                  variant="field"
                   value={c.voice}
-                  onChange={(event) =>
-                    c.setVoice(event.target.value as RealtimeVoice)
-                  }
-                >
-                  <option value="marin">Marin</option>
-                  <option value="cedar">Cedar</option>
-                  <option value="coral">Coral</option>
-                  <option value="sage">Sage</option>
-                </select>
-              </label>
-              <label htmlFor={`${id}-vad`}>
+                  options={["marin", "cedar", "coral", "sage"].map((value) => ({
+                    value,
+                    label: value[0].toUpperCase() + value.slice(1),
+                  }))}
+                  onChange={(value) => c.setVoice(value as RealtimeVoice)}
+                />
+              </div>
+              <div>
                 停句方式
-                <select
-                  id={`${id}-vad`}
+                <WorkspaceSelect
+                  label="停句方式"
+                  variant="field"
                   value={c.vad}
-                  onChange={(event) =>
-                    c.setVad(event.target.value as RealtimeVad)
-                  }
-                >
-                  <option value="natural">自然停句</option>
-                  <option value="fast">快速回应</option>
-                </select>
-              </label>
+                  options={[
+                    { value: "natural", label: "自然停句" },
+                    { value: "fast", label: "快速回应" },
+                  ]}
+                  onChange={(value) => c.setVad(value as RealtimeVad)}
+                />
+              </div>
             </div>
           </details>
           <button

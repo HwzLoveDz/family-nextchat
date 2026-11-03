@@ -1,4 +1,5 @@
 /** @jest-environment jsdom */
+import { chooseWorkspaceOption } from "./family-ui-select";
 import { jest } from "@jest/globals";
 import {
   act,
@@ -105,9 +106,10 @@ test("dialog traps focus, supports tab arrows, Escape and restores launch focus"
 test("settings call enum callbacks and lock voice choices for an active call", () => {
   const p = props();
   const view = render(<FamilySettings {...p} />);
-  fireEvent.change(screen.getByRole("combobox", { name: "文字大小" }), {
-    target: { value: "large" },
-  });
+  chooseWorkspaceOption(
+    screen.getByRole("combobox", { name: "文字大小" }),
+    "large",
+  );
   expect(p.onPreferencesChange).toHaveBeenCalledWith({
     font: "large",
     density: "comfortable",
@@ -117,13 +119,31 @@ test("settings call enum callbacks and lock voice choices for an active call", (
   fireEvent.click(screen.getByRole("radio", { name: "石墨" }));
   expect(p.onThemeChange).toHaveBeenCalledWith("graphite");
   fireEvent.click(screen.getByRole("tab", { name: "语音" }));
-  fireEvent.change(screen.getByRole("combobox", { name: "连续语音声音" }), {
-    target: { value: "cedar" },
-  });
+  chooseWorkspaceOption(
+    screen.getByRole("combobox", { name: "连续语音声音" }),
+    "cedar",
+  );
   expect(p.onVoiceChange).toHaveBeenCalledWith("cedar");
   view.rerender(<FamilySettings {...p} voiceBusy />);
   expect(screen.getByRole("combobox", { name: "连续语音声音" })).toBeDisabled();
   expect(screen.getByRole("combobox", { name: "语音输入方式" })).toBeDisabled();
+});
+
+test("Escape dismisses an expanded choice before closing settings", () => {
+  const p = props();
+  render(<FamilySettings {...p} />);
+  const field = screen.getByRole("combobox", { name: "文字大小" });
+  field.focus();
+  fireEvent.click(field);
+  expect(screen.getByRole("listbox", { name: "文字大小" })).toBeInTheDocument();
+  fireEvent.keyDown(field, { key: "Escape" });
+  expect(
+    screen.queryByRole("listbox", { name: "文字大小" }),
+  ).not.toBeInTheDocument();
+  expect(p.onClose).not.toHaveBeenCalled();
+  expect(field).toHaveFocus();
+  fireEvent.keyDown(field, { key: "Escape" });
+  expect(p.onClose).toHaveBeenCalledTimes(1);
 });
 test("account actions expose only sanitized device summaries and never revoke the current device", async () => {
   const p = props();

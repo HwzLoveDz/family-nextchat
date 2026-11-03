@@ -1,4 +1,5 @@
 /** @jest-environment jsdom */
+import { chooseWorkspaceOption } from "./family-ui-select";
 import { jest } from "@jest/globals";
 import {
   act,
@@ -190,6 +191,24 @@ const menu = () => {
   fireEvent.click(screen.getByLabelText("对话操作"));
 };
 
+test("conversation actions support arrow navigation and Escape without changing the chat", async () => {
+  await open();
+  const trigger = screen.getByLabelText("对话操作");
+  fireEvent.click(trigger);
+  fireEvent.keyDown(trigger, { key: "ArrowDown" });
+  expect(
+    screen.getByRole("button", { name: "置顶对话", exact: true }),
+  ).toHaveFocus();
+  fireEvent.keyDown(document.activeElement!, { key: "End" });
+  expect(
+    screen.getByRole("button", { name: "归档对话", exact: true }),
+  ).toHaveFocus();
+  fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+  expect(trigger.closest("details")).not.toHaveAttribute("open");
+  expect(trigger).toHaveFocus();
+  expect(paidCalls()).toHaveLength(0);
+});
+
 test.each(["我的文件", "我的用量"])(
   "%s can return to a new unsaved conversation with the same draft and file input",
   async (destination) => {
@@ -204,11 +223,17 @@ test.each(["我的文件", "我的用量"])(
     fireEvent.change(composer, { target: { value: "尚未创建会话的草稿" } });
     const input = view.container.querySelector('input[type="file"]')!;
     fireEvent.change(input, {
-      target: { files: [new File(["keep"], "draft-keep.txt", { type: "text/plain" })] },
+      target: {
+        files: [new File(["keep"], "draft-keep.txt", { type: "text/plain" })],
+      },
     });
     await screen.findByText("draft-keep.txt");
-    fireEvent.click(screen.getByRole("button", { name: destination, exact: true }));
-    fireEvent.click(await screen.findByRole("button", { name: "返回聊天", exact: true }));
+    fireEvent.click(
+      screen.getByRole("button", { name: destination, exact: true }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "返回聊天", exact: true }),
+    );
     expect(screen.getByRole("textbox", { name: "发送消息" })).toBe(composer);
     expect(composer).toHaveValue("尚未创建会话的草稿");
     expect(view.container.querySelector('input[type="file"]')).toBe(input);
@@ -621,9 +646,10 @@ test("workspace shortcuts focus search and open settings; suggestion chips only 
   );
   fireEvent.keyDown(window, { key: ",", metaKey: true });
   const dialog = await screen.findByRole("dialog", { name: "设置" });
-  fireEvent.change(within(dialog).getByRole("combobox", { name: "文字大小" }), {
-    target: { value: "large" },
-  });
+  chooseWorkspaceOption(
+    within(dialog).getByRole("combobox", { name: "文字大小" }),
+    "large",
+  );
   fireEvent.keyDown(document, { key: "Escape" });
   expect(
     screen.queryByRole("dialog", { name: "设置" }),

@@ -26,19 +26,19 @@
     font: inherit;
     color: inherit;
   }
-  button {
-    min-height: 40px;
+  :where(button:not([role="combobox"])) {
+    min-height: 36px;
     border: 1px solid transparent;
     border-radius: 8px;
     background: var(--accent);
     color: var(--on-accent);
     cursor: pointer;
-    padding: 8px 14px;
+    padding: 7px 12px;
   }
-  button:hover:not(:disabled) {
+  :where(button:not([role="combobox"]):hover:not(:disabled)) {
     background: var(--accent-hover);
   }
-  button:disabled {
+  :where(button:not([role="combobox"]):disabled) {
     opacity: 0.45;
     cursor: not-allowed;
   }
@@ -73,11 +73,11 @@
     margin: 0;
   }
   h2 {
-    font-size: 18px;
+    font-size: 16px;
     font-weight: 600;
   }
   h3 {
-    font-size: 15px;
+    font-size: 14px;
     font-weight: 600;
     margin-bottom: 8px;
   }
@@ -99,7 +99,7 @@
   }
 }
 .dialog {
-  width: min(790px, 100%);
+  width: min(800px, 100%);
   max-height: min(700px, calc(var(--family-viewport-height, 100dvh) - 32px));
   display: flex;
   flex-direction: column;
@@ -107,23 +107,27 @@
   overflow: hidden;
   background: var(--paper);
   border: 1px solid var(--line);
-  border-radius: 16px;
-  box-shadow: 0 24px 100px #0004;
+  border-radius: 14px;
+  box-shadow:
+    0 24px 80px #00000029,
+    0 2px 12px var(--app-shadow);
 }
 .header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 18px 12px 24px;
+  padding: 10px 14px 10px 22px;
   flex-shrink: 0;
   border-bottom: 1px solid var(--line);
 }
 .backdrop .close {
   background: transparent;
   color: var(--muted);
-  width: 40px;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
   padding: 0;
-  font-size: 25px;
+  font-size: 23px;
   line-height: 1;
 }
 .backdrop .close:hover {
@@ -131,6 +135,7 @@
 }
 .layout {
   display: flex;
+  flex: 1;
   min-height: 0;
   overflow: hidden;
 }
@@ -138,9 +143,9 @@
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  gap: 3px;
-  padding: 16px 10px;
-  width: 150px;
+  gap: 4px;
+  padding: 14px 10px;
+  width: 152px;
   background: var(--sidebar-bg);
   border-right: 1px solid var(--line);
 }
@@ -148,15 +153,17 @@
   background: transparent;
   color: var(--muted);
   text-align: left;
-  padding: 9px 14px;
+  min-height: 36px;
+  padding: 8px 12px;
+  font-size: 13px;
 }
-.backdrop .tabs button:hover,
+.backdrop .tabs button:hover:not(:disabled),
 .backdrop .tabs button[aria-selected="true"] {
   background: var(--hover);
   color: var(--ink);
 }
 .content {
-  padding: 24px 28px;
+  padding: 24px;
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -164,11 +171,13 @@
   overscroll-behavior: contain;
   scroll-padding-block: 20px;
   -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: var(--input-line) transparent;
 }
 .help {
   color: var(--muted);
   font-size: 12px;
-  line-height: 1.7;
+  line-height: 1.6;
   overflow-wrap: anywhere;
   margin-bottom: 16px !important;
 }
@@ -178,29 +187,41 @@
   align-items: center;
   gap: 16px;
   border-bottom: 1px solid var(--line);
-  min-height: 64px;
-  padding-block: 10px;
+  min-height: 60px;
+  padding-block: 12px;
+  font-size: 13px;
 }
-.row select {
-  width: 190px;
+.rowControl {
+  width: 200px;
+  min-width: 0;
   flex-shrink: 0;
+}
+.backdrop .rowControl [role="combobox"] {
+  min-height: 36px;
+  border-radius: 8px;
+  font-size: 13px;
 }
 .check {
   display: flex;
   gap: 10px;
   align-items: center;
   padding: 18px 0;
+  font-size: 13px;
 }
 .check input {
-  width: 17px;
-  min-height: 17px;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  padding: 0;
+  margin: 0;
   accent-color: var(--accent);
 }
 .themes {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  margin-top: 20px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 18px;
 }
 .theme {
   position: relative;
@@ -211,35 +232,50 @@
   flex-direction: column;
   cursor: pointer;
   min-width: 0;
+  background: var(--paper);
+  transition:
+    border-color 0.15s,
+    background 0.15s;
 }
 .theme:hover {
   border-color: var(--input-line);
+  background: var(--panel-bg);
 }
-.selected {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+.theme.selected {
+  border-color: var(--accent);
+  background: var(--soft-bg);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.theme:focus-within {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 .theme input {
   position: absolute;
   right: 12px;
   bottom: 17px;
   width: 16px;
+  height: 16px;
   min-height: 16px;
+  padding: 0;
+  margin: 0;
   accent-color: var(--accent);
+  cursor: pointer;
 }
 .theme strong {
-  font-size: 13px;
+  font-size: 12px;
   margin-top: 8px;
 }
 .theme small {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
+  line-height: 1.5;
   padding-right: 20px;
 }
 .preview {
-  height: 72px;
+  height: 60px;
   border: 1px solid;
-  border-radius: 5px;
+  border-radius: 6px;
   display: block;
   position: relative;
   overflow: hidden;
@@ -275,9 +311,13 @@
   flex: 1;
   display: grid;
   gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
 }
 .profile input {
   width: 100%;
+  color: var(--ink);
+  font-size: 13px;
 }
 .sectionTitle {
   display: flex;
@@ -343,6 +383,7 @@
   gap: 10px;
   padding-block: 14px;
   border-bottom: 1px solid var(--line);
+  font-size: 13px;
 }
 .shortcuts dd {
   margin: 0;
@@ -355,8 +396,15 @@
   border: 1px solid var(--input-line);
   border-radius: 5px;
   background: var(--soft-bg);
-  font: 11px/1.5 inherit;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.5;
   padding: 3px 6px;
+}
+@media (max-width: 720px) {
+  .themes {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 @media (max-width: 600px) {
   .backdrop {
@@ -393,13 +441,21 @@
   .backdrop button {
     min-height: 44px;
   }
+  .backdrop .close {
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
   .row {
     gap: 10px;
     flex-wrap: wrap;
   }
-  .row select {
+  .rowControl {
     flex-basis: 100%;
     width: 100%;
+  }
+  .backdrop .rowControl [role="combobox"] {
+    min-height: 44px;
     font-size: 16px;
   }
   .profile input {
@@ -413,5 +469,10 @@
   }
   .theme small {
     display: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .theme {
+    transition: none;
   }
 }

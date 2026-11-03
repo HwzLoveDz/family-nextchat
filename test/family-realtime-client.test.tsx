@@ -1,4 +1,5 @@
 /** @jest-environment jsdom */
+import { chooseWorkspaceOption } from "./family-ui-select";
 import { jest } from "@jest/globals";
 import {
   act,
@@ -498,17 +499,16 @@ test("panel offers four voices, natural/fast VAD and accessible call controls wi
   const view = hook();
   const panel = render(<RealtimePanel controller={view.result.current} />);
   fireEvent.click(screen.getByText("声音与停句"));
-  expect(
-    screen.getByRole("combobox", { name: "声音" }).querySelectorAll("option"),
-  ).toHaveLength(4);
-  expect(
-    screen
-      .getByRole("combobox", { name: "停句方式" })
-      .querySelectorAll("option"),
-  ).toHaveLength(2);
-  fireEvent.change(screen.getByRole("combobox", { name: "声音" }), {
-    target: { value: "cedar" },
-  });
+  fireEvent.click(screen.getByRole("combobox", { name: "声音" }));
+  expect(screen.getAllByRole("option")).toHaveLength(4);
+  fireEvent.click(screen.getByRole("combobox", { name: "声音" }));
+  fireEvent.click(screen.getByRole("combobox", { name: "停句方式" }));
+  expect(screen.getAllByRole("option")).toHaveLength(2);
+  fireEvent.click(screen.getByRole("combobox", { name: "停句方式" }));
+  chooseWorkspaceOption(
+    screen.getByRole("combobox", { name: "声音" }),
+    "cedar",
+  );
   expect(view.result.current.voice).toBe("cedar");
   expect(Bridge.instances).toHaveLength(0);
   panel.unmount();
