@@ -230,9 +230,10 @@
     margin-top: 2px;
   }
 }
-.dashboard .legendButton:hover,
+.dashboard .legendButton:hover:not(:disabled),
 .dashboard .legendButton[aria-pressed="true"] {
   background: var(--hover);
+  color: var(--ink);
 }
 .help {
   font-size: 11px;
