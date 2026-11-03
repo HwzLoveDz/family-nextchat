@@ -2,7 +2,7 @@ import "server-only";
 import { getPool, transaction } from "./db";
 import { FamilyApiError } from "./errors";
 
-export const FAMILY_APPLICATION_SCHEMA_VERSION = 8;
+export const FAMILY_APPLICATION_SCHEMA_VERSION = 9;
 
 /** Application-only, additive upgrade. The caller owns the transaction and schema lock. */
 export const FAMILY_APPLICATION_UPGRADE_SQL = String.raw`
@@ -169,6 +169,8 @@ CREATE TABLE IF NOT EXISTS family_provider_observation (
 );
 ALTER TABLE family_generation ADD COLUMN IF NOT EXISTS image_size text;
 ALTER TABLE family_generation ADD COLUMN IF NOT EXISTS image_quality text;
+ALTER TABLE family_generation ADD COLUMN IF NOT EXISTS reasoning_effort text
+  CHECK(reasoning_effort IS NULL OR reasoning_effort IN ('low','medium','high'));
 CREATE TABLE IF NOT EXISTS family_generated_image (
   id uuid PRIMARY KEY,
   user_id text NOT NULL REFERENCES "user"(id),
@@ -192,7 +194,7 @@ CREATE TABLE IF NOT EXISTS family_schema_version (
   version integer NOT NULL CHECK (version >= 0),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
-INSERT INTO family_schema_version(id,version) VALUES(1,8)
+INSERT INTO family_schema_version(id,version) VALUES(1,9)
 ON CONFLICT(id) DO UPDATE
   SET version=GREATEST(family_schema_version.version,EXCLUDED.version),updated_at=now();`;
 
@@ -222,9 +224,10 @@ export async function applicationUpgradeStatus(): Promise<{
   const metadata = (
     await pool.query(`SELECT
       to_regclass('family_schema_version') IS NOT NULL AS version_table_exists,
-      (SELECT count(*) = 123 FROM information_schema.columns
+      (SELECT count(*) = 124 FROM information_schema.columns
         WHERE table_schema = current_schema()
           AND (table_name,column_name,data_type,is_nullable) IN (
+            ('family_generation','reasoning_effort','text','YES'),
             ('family_generation','image_size','text','YES'),
             ('family_generation','image_quality','text','YES'),
             ('family_generated_image','id','uuid','NO'),

@@ -2,6 +2,11 @@ import "server-only";
 import type { FamilyModel, FamilyModelCatalog } from "../types";
 import { FamilyApiError } from "./errors";
 import type { CompletionMessage } from "./attachments";
+import {
+  DEFAULT_REASONING_EFFORT,
+  FAMILY_REASONING_EFFORTS,
+  type FamilyReasoningEffort,
+} from "../reasoning-types";
 
 // Only text Chat Completions profiles explicitly checked against OpenAI's model
 // pages are admitted. An account's /models list is not a capability declaration.
@@ -132,6 +137,21 @@ const IMAGE_MODELS: Record<string, Omit<FamilyModel, "id">> = {
 export function isImageModelId(value: string) {
   return Object.hasOwn(IMAGE_MODELS, value);
 }
+/** Capability lookup remains available when replaying a formerly admitted model. */
+export function isReasoningModelId(value: string) {
+  return Object.hasOwn(PROFILES, value) && PROFILES[value].reasoning;
+}
+export function validatedReasoningEffort(
+  value: unknown,
+): FamilyReasoningEffort {
+  if (!FAMILY_REASONING_EFFORTS.includes(value as FamilyReasoningEffort))
+    throw new FamilyApiError(
+      400,
+      "请选择低、中或高推理强度。",
+      "INVALID_REASONING_EFFORT",
+    );
+  return value as FamilyReasoningEffort;
+}
 // Capability admission is curated independently of account/model discovery.
 // PDF Chat Completions requires image-capable models:
 // https://developers.openai.com/api/docs/guides/file-inputs
@@ -215,6 +235,7 @@ export function allowedModel(value: unknown): FamilyModel {
 export function completionBody(
   model: FamilyModel,
   messages: CompletionMessage[],
+  reasoningEffort?: FamilyReasoningEffort,
 ) {
   if (model.kind === "image")
     throw new FamilyApiError(
@@ -222,14 +243,26 @@ export function completionBody(
       "图片模型请使用图片生成接口。",
       "IMAGE_MODEL_REQUIRES_IMAGE_API",
     );
+  if (!model.reasoning && reasoningEffort !== undefined)
+    throw new FamilyApiError(
+      400,
+      "此模型不支持推理强度设置。",
+      "REASONING_EFFORT_UNSUPPORTED",
+    );
   return {
     model: model.id,
     messages,
     stream: true,
     stream_options: { include_usage: true },
     max_completion_tokens: 2048,
-    ...(model.reasoning ? { reasoning_effort: "low" } : {}),
+    ...(model.reasoning
+      ? {
+          reasoning_effort: validatedReasoningEffort(
+            reasoningEffort ?? DEFAULT_REASONING_EFFORT,
+          ),
+        }
+      : {}),
     // Sampling parameters are deliberately omitted: reasoning profiles reject
-    // temperature/top_p in several supported modes. No client tuning is accepted.
+    // temperature/top_p in several supported modes. Other controls stay fixed.
   };
 }

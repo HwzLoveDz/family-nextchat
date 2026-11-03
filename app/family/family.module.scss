@@ -1765,18 +1765,30 @@
 .composer > .composerActions {
   display: grid;
   grid-template-columns: [attachment] 36px [model] minmax(92px, 1fr) [voice] auto [send] auto;
-  grid-template-rows: [attachments] auto [errors] auto [tools] auto;
+  grid-template-rows: [attachments] auto [errors] auto [reasoning] auto [tools] auto;
   gap: 0 3px;
   padding: 0;
   min-height: 36px;
 }
-.composerActions > .modelPicker {
+.composerActions > .composerModelControls {
   grid-column: model;
   grid-row: tools;
   width: min(100%, 230px);
   max-width: 230px;
   display: flex;
-  flex: none;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+.composerActions > .composerModelControls.withReasoning {
+  width: min(100%, 340px);
+  max-width: 340px;
+}
+.composerModelControls > .modelPicker {
+  min-width: 0;
+  width: auto;
+  display: flex;
+  flex: 1;
   align-items: center;
   gap: 0;
   margin: 0;
@@ -2132,6 +2144,14 @@
     grid-template-columns: [attachment] 44px [model] minmax(56px, 1fr) [voice] auto [send] auto;
     gap: 0;
     min-height: 44px;
+  }
+  .composerActions > .composerModelControls.withReasoning {
+    grid-column: 1 / -1;
+    grid-row: reasoning;
+    width: 100%;
+    max-width: none;
+    margin-bottom: 4px;
+    gap: 6px;
   }
   .shell .composerActions .voiceButton,
   .shell .composerActions .voiceTools .iconButton {

@@ -228,6 +228,129 @@ describe("family client account isolation", () => {
     expect(container.textContent).toContain("模型 API 尚未配置。");
   });
 
+  test("reasoning controls have three choices, default low, and preserve the existing composer", async () => {
+    const view = render(<FamilyApp />);
+    const composer = await screen.findByRole("textbox", { name: "发送消息" });
+    const fileInput = view.container.querySelector('input[type="file"]');
+    await waitFor(() => expect(composer).toBeEnabled());
+    expect(
+      screen.queryByRole("combobox", { name: "推理强度" }),
+    ).not.toBeInTheDocument();
+    fireEvent.change(composer, { target: { value: "强度切换时保留草稿" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "选择模型" }), {
+      target: { value: "model-think" },
+    });
+    const effort = await screen.findByRole("combobox", { name: "推理强度" });
+    expect(effort).toHaveValue("low");
+    expect(
+      within(effort)
+        .getAllByRole("option")
+        .map((item) => (item as HTMLOptionElement).value),
+    ).toEqual(["low", "medium", "high"]);
+    fireEvent.change(effort, { target: { value: "high" } });
+    expect(effort).toHaveValue("high");
+    expect(screen.getByRole("textbox", { name: "发送消息" })).toBe(composer);
+    expect(composer).toHaveValue("强度切换时保留草稿");
+    expect(view.container.querySelector('input[type="file"]')).toBe(fileInput);
+    expect(
+      fetchMock.mock.calls.some(
+        ([path, init]) =>
+          path !== "/api/family/activity" &&
+          init?.method &&
+          init.method !== "GET",
+      ),
+    ).toBe(false);
+    fireEvent.change(screen.getByRole("combobox", { name: "选择模型" }), {
+      target: { value: "model-fast" },
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("combobox", { name: "推理强度" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(composer).toHaveValue("强度切换时保留草稿");
+  });
+
+  test.each(["low", "medium", "high"])(
+    "an explicit reasoning send carries the selected %s effort",
+    async (effort) => {
+      const base = requestHandler;
+      requestHandler = async (path, init) => {
+        if (path === "/api/family/chats" && init?.method === "POST")
+          return json({ chat: { ...chat("a"), model: "model-think" } });
+        if (path.endsWith("/messages") && init?.method === "POST")
+          return json({ error: "合成发送已拦截" }, 503);
+        return base(path, init);
+      };
+      render(<FamilyApp />);
+      const composer = await screen.findByRole("textbox", { name: "发送消息" });
+      await waitFor(() => expect(composer).toBeEnabled());
+      fireEvent.change(screen.getByRole("combobox", { name: "选择模型" }), {
+        target: { value: "model-think" },
+      });
+      fireEvent.change(
+        await screen.findByRole("combobox", { name: "推理强度" }),
+        { target: { value: effort } },
+      );
+      fireEvent.change(composer, { target: { value: "明确选择强度后发送" } });
+      fireEvent.click(screen.getByRole("button", { name: "发送 ↑" }));
+      await screen.findByText("合成发送已拦截");
+      const sent = fetchMock.mock.calls.find(
+        ([path, init]) =>
+          String(path).endsWith("/messages") && init?.method === "POST",
+      );
+      expect(JSON.parse(String(sent?.[1]?.body))).toMatchObject({
+        model: "model-think",
+        reasoningEffort: effort,
+        content: "明确选择强度后发送",
+      });
+    },
+  );
+
+  test("history restores a stored effort while a new conversation returns to low", async () => {
+    const base = requestHandler;
+    requestHandler = async (path, init) => {
+      if (path === "/api/family/chats/a") {
+        const saved = detail("已保存的高强度回复");
+        saved.chat.model = "model-think";
+        saved.messages[0].reasoningEffort = "high";
+        return json(saved);
+      }
+      return base(path, init);
+    };
+    render(<FamilyApp />);
+    fireEvent.click(await screen.findByRole("button", { name: /聊天 a/ }));
+    expect(
+      await screen.findByRole("combobox", { name: "推理强度" }),
+    ).toHaveValue("high");
+    fireEvent.click(screen.getByRole("button", { name: "＋ 新聊天" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "选择模型" }), {
+      target: { value: "model-think" },
+    });
+    expect(
+      await screen.findByRole("combobox", { name: "推理强度" }),
+    ).toHaveValue("low");
+  });
+
+  test("dismissing the conversation menu outside keeps the exact unsent editor", async () => {
+    render(<FamilyApp />);
+    const composer = await screen.findByRole("textbox", { name: "发送消息" });
+    await waitFor(() => expect(composer).toBeEnabled());
+    fireEvent.change(composer, { target: { value: "菜单关闭不清空草稿" } });
+    const trigger = screen.getByLabelText("对话操作");
+    const menu = trigger.closest("details")!;
+    menu.open = true;
+    fireEvent.pointerDown(composer);
+    expect(menu.open).toBe(false);
+    expect(screen.getByRole("textbox", { name: "发送消息" })).toBe(composer);
+    expect(composer).toHaveValue("菜单关闭不清空草稿");
+    menu.open = true;
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "Escape" });
+    expect(menu.open).toBe(false);
+    expect(trigger).toHaveFocus();
+  });
+
   test("changing appearance preserves the selected chat, model and unsent draft without an API mutation", async () => {
     const { container } = render(<FamilyApp />);
     fireEvent.click(await screen.findByRole("button", { name: /聊天 a/ }));

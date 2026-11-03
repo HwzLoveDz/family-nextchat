@@ -133,13 +133,13 @@ describe("family application upgrade boundaries", () => {
       poolQuery.mock.calls.every(([sql]) => /^SELECT\b/.test(sql.trim())),
     ).toBe(true);
     expect(clientQuery).not.toHaveBeenCalled();
-    expect(poolQuery.mock.calls[0][0]).toContain("count(*) = 123");
+    expect(poolQuery.mock.calls[0][0]).toContain("count(*) = 124");
     expect(poolQuery.mock.calls[0][0]).toContain(
       "('family_generation','cancel_requested_at','timestamp with time zone','YES')",
     );
   });
 
-  test.each([undefined, 0, 1, 2, 3, 4, 5, 6, 7, "8", -1])(
+  test.each([undefined, 0, 1, 2, 3, 4, 5, 6, 7, 8, "9", -1])(
     "missing, old, or invalid version %p cannot pass readiness",
     async (version) => {
       poolQuery
@@ -155,10 +155,10 @@ describe("family application upgrade boundaries", () => {
     },
   );
 
-  test("a complete v8 schema is accepted through SELECTs alone", async () => {
+  test("a complete v9 schema is accepted through SELECTs alone", async () => {
     poolQuery
       .mockResolvedValueOnce(readyMetadata())
-      .mockResolvedValueOnce(result([{ version: 8 }]));
+      .mockResolvedValueOnce(result([{ version: 9 }]));
     await expect(
       upgrades.requireFamilyApplicationUpgrade(),
     ).resolves.toBeUndefined();
@@ -320,13 +320,18 @@ describe("family application upgrade boundaries", () => {
 
   test("a retired model in an older env allowlist is hidden and cannot be requested", () => {
     process.env.FAMILY_OPENAI_MODELS = "gpt-4o-mini,gpt-4.1-nano";
-    expect(models.modelCatalog().models.map((model) => model.id)).not.toContain("gpt-4.1-nano");
+    expect(models.modelCatalog().models.map((model) => model.id)).not.toContain(
+      "gpt-4.1-nano",
+    );
     expect(() => models.allowedModel("gpt-4.1-nano")).toThrow(
       expect.objectContaining({ status: 400, code: "MODEL_NOT_ALLOWED" }),
     );
     process.env.FAMILY_OPENAI_MODEL = "gpt-4.1-nano";
     expect(() => models.modelCatalog()).toThrow(
-      expect.objectContaining({ status: 503, code: "MODEL_CATALOG_MISCONFIGURED" }),
+      expect.objectContaining({
+        status: 503,
+        code: "MODEL_CATALOG_MISCONFIGURED",
+      }),
     );
   });
 
@@ -360,6 +365,28 @@ describe("family application upgrade boundaries", () => {
     expect(payload).not.toHaveProperty("temperature");
     expect(payload).not.toHaveProperty("baseURL");
     expect(payload).not.toHaveProperty("apiKey");
+  });
+
+  test("completion body accepts high reasoning while fixed ordinary profiles omit it", () => {
+    process.env.FAMILY_OPENAI_MODELS = "gpt-4o-mini,gpt-5-mini";
+    expect(
+      models.completionBody(models.allowedModel("gpt-5-mini"), [], "high"),
+    ).toMatchObject({ reasoning_effort: "high", max_completion_tokens: 2048 });
+    expect(
+      models.completionBody(models.allowedModel("gpt-4o-mini"), []),
+    ).not.toHaveProperty("reasoning_effort");
+    expect(() =>
+      models.completionBody(
+        models.allowedModel("gpt-5-mini"),
+        [],
+        "max" as any,
+      ),
+    ).toThrow(expect.objectContaining({ code: "INVALID_REASONING_EFFORT" }));
+    expect(() =>
+      models.completionBody(models.allowedModel("gpt-4o-mini"), [], "low"),
+    ).toThrow(
+      expect.objectContaining({ code: "REASONING_EFFORT_UNSUPPORTED" }),
+    );
   });
 
   const chatId = "11111111-1111-4111-8111-111111111111";
@@ -711,6 +738,7 @@ describe("family application upgrade boundaries", () => {
     "a committed cancel flag forces %s into %s while preserving %s usage",
     async (reply, expectedState, source, inputTokens, outputTokens) => {
       const usage = { source, inputTokens, outputTokens };
+      process.env.FAMILY_OPENAI_MODELS = "gpt-4o-mini,gpt-5-mini";
       const started: Parameters<typeof chats.finishGeneration>[0] = {
         id: generationId,
         assistantId: sourceMessageId,
@@ -729,7 +757,8 @@ describe("family application upgrade boundaries", () => {
           createdAt: date.toISOString(),
         },
         history: [],
-        model: models.allowedModel("gpt-4o-mini"),
+        model: models.allowedModel("gpt-5-mini"),
+        reasoningEffort: "high",
       };
       clientQuery.mockImplementation(async (sql, values) => {
         if (["BEGIN", "COMMIT", "ROLLBACK"].includes(sql)) return result();
@@ -745,7 +774,7 @@ describe("family application upgrade boundaries", () => {
             outputTokens,
             source,
             generationId,
-            "gpt-4o-mini-2024-07-18",
+            "gpt-5-mini-2025-08-07",
           ]);
           return result();
         }
@@ -769,12 +798,13 @@ describe("family application upgrade boundaries", () => {
         reply,
         "complete",
         usage,
-        "gpt-4o-mini-2024-07-18",
+        "gpt-5-mini-2025-08-07",
       );
       expect(message).toMatchObject({
         status: expectedState,
         content: reply,
         usage,
+        reasoningEffort: "high",
       });
       expect(
         clientQuery.mock.calls.some(([sql]) =>

@@ -2,6 +2,8 @@ import type {
   FamilyGeneratedImageMeta,
   FamilyImageOptions,
 } from "./image-types";
+import type { FamilyReasoningEffort } from "./reasoning-types";
+export type { FamilyReasoningEffort } from "./reasoning-types";
 export type {
   FamilyGeneratedImageMeta,
   FamilyImageOptions,
@@ -67,6 +69,7 @@ export interface FamilyMessage {
   attachments?: FamilyAttachmentMeta[];
   generatedImages?: FamilyGeneratedImageMeta[];
   imageOptions?: FamilyImageOptions;
+  reasoningEffort?: FamilyReasoningEffort;
 }
 export interface FamilyAttachmentInput {
   name: string;
@@ -101,6 +104,7 @@ export type FamilyMessageRequest = {
   requestId: string;
   model?: string;
   imageOptions?: FamilyImageOptions;
+  reasoningEffort?: FamilyReasoningEffort;
 } & (
   | {
       mode?: "send";

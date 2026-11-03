@@ -12,6 +12,13 @@ import { FamilyMarkdown } from "./message-markdown";
 import { FamilySettings } from "./family-settings";
 import { FamilyIcon } from "./icons";
 import { modelDescription } from "./model-descriptions";
+import { ReasoningEffortPicker } from "./reasoning-effort-picker";
+import {
+  DEFAULT_REASONING_EFFORT,
+  FAMILY_REASONING_EFFORTS,
+  type FamilyReasoningEffort,
+} from "./reasoning-types";
+import { useDismissableDetails } from "./use-dismissable-details";
 import { ProviderAdminPanel } from "./provider-admin-panel";
 import type { ProviderAdminSnapshot } from "./provider-admin-types";
 import { UsageDashboard } from "./usage-dashboard";
@@ -140,6 +147,17 @@ function imageOptionsFromMessages(
     FAMILY_IMAGE_QUALITIES.includes(options.quality)
     ? { ...options }
     : { ...DEFAULT_IMAGE_OPTIONS };
+}
+function reasoningEffortFromMessages(
+  messages: FamilyMessage[],
+): FamilyReasoningEffort {
+  const effort = [...messages]
+    .reverse()
+    .find((message) => !message.superseded && message.role === "assistant")
+    ?.reasoningEffort;
+  return effort && FAMILY_REASONING_EFFORTS.includes(effort)
+    ? effort
+    : DEFAULT_REASONING_EFFORT;
 }
 function markdownExport(detail: FamilyChatDetail) {
   return [
@@ -402,6 +420,10 @@ export function FamilyApp() {
   const [activeChat, setActiveChat] = useState<FamilyChat | null>(null);
   const [models, setModels] = useState<FamilyModel[]>([]);
   const [selectedModel, setSelectedModel] = useState("");
+  const [reasoningEffort, setReasoningEffort] = useState<FamilyReasoningEffort>(
+    DEFAULT_REASONING_EFFORT,
+  );
+  const conversationMenu = useDismissableDetails();
   const [imageOptions, setImageOptions] = useState<FamilyImageOptions>(() => ({
     ...DEFAULT_IMAGE_OPTIONS,
   }));
@@ -654,6 +676,7 @@ export function FamilyApp() {
     setActiveChat(null);
     setModels([]);
     setSelectedModel("");
+    setReasoningEffort(DEFAULT_REASONING_EFFORT);
     setImageOptions({ ...DEFAULT_IMAGE_OPTIONS });
     setModelLoading(false);
     setModelError("");
@@ -1173,6 +1196,7 @@ export function FamilyApp() {
         setActiveChat(data.chat);
         setSelectedModel(data.chat.model || defaultModel.current);
         setImageOptions(imageOptionsFromMessages(data.messages));
+        setReasoningEffort(reasoningEffortFromMessages(data.messages));
       }
     } finally {
       if (generation === epoch.current && version === listVersion.current)
@@ -1378,6 +1402,7 @@ export function FamilyApp() {
             status: "streaming",
             createdAt,
             requestedModel: selectedModel,
+            ...(generationModel.reasoning ? { reasoningEffort } : {}),
             ...(generationModel.kind === "image" ? { imageOptions } : {}),
           },
         ]);
@@ -1406,6 +1431,7 @@ export function FamilyApp() {
             };
       if (generationModel.kind === "image")
         payload.imageOptions = { ...imageOptions };
+      if (generationModel.reasoning) payload.reasoningEffort = reasoningEffort;
       const serialized = JSON.stringify(payload);
       if (new Blob([serialized]).size >= ATTACHMENT_LIMITS.wireBytes)
         throw new Error("消息与附件合计过大，请移除部分附件后重试。");
@@ -1560,6 +1586,7 @@ export function FamilyApp() {
             acceptChat(detail.chat);
             setSelectedModel(detail.chat.model || defaultModel.current);
             setImageOptions(imageOptionsFromMessages(detail.messages));
+            setReasoningEffort(reasoningEffortFromMessages(detail.messages));
           }
         } catch (failure) {
           if (
@@ -1771,6 +1798,7 @@ export function FamilyApp() {
           setOlderCursor(detail.nextBeforeMessageId ?? null);
           setSelectedModel(detail.chat.model || defaultModel.current);
           setImageOptions(imageOptionsFromMessages(detail.messages));
+          setReasoningEffort(reasoningEffortFromMessages(detail.messages));
         })
         .catch((failure) => {
           if (
@@ -1852,6 +1880,7 @@ export function FamilyApp() {
     attachmentReset.current();
     setActiveChat(null);
     setSelectedModel(defaultModel.current);
+    setReasoningEffort(DEFAULT_REASONING_EFFORT);
     setImageOptions({ ...DEFAULT_IMAGE_OPTIONS });
     setRenameTitle(null);
     setEditingMessage(null);
@@ -2628,7 +2657,10 @@ export function FamilyApp() {
               </h1>
             </div>
             {screen === "chat" && workspaceMode === "chat" && !realtime.busy ? (
-              <details className={styles.conversationMenu}>
+              <details
+                ref={conversationMenu}
+                className={styles.conversationMenu}
+              >
                 <summary aria-label="对话操作" title="对话操作">
                   <FamilyIcon name="dots" />
                 </summary>
@@ -2703,6 +2735,9 @@ export function FamilyApp() {
                           );
                           setImageOptions(
                             imageOptionsFromMessages(detail.messages),
+                          );
+                          setReasoningEffort(
+                            reasoningEffortFromMessages(detail.messages),
                           );
                         }
                       })
@@ -3753,58 +3788,81 @@ export function FamilyApp() {
                     onFiles={(files) => void draftAttachments.addFiles(files)}
                     onRemove={draftAttachments.remove}
                   />
-                  <label className={styles.modelPicker}>
-                    <span>模型</span>
-                    <select
-                      aria-label="选择模型"
-                      title={modelDescription(selectedModel) || "选择模型"}
-                      value={selectedModel}
-                      disabled={
-                        sending ||
-                        working ||
-                        detailLoading ||
-                        modelLoading ||
-                        voice.busy ||
-                        realtimeBusy.current ||
-                        draftAttachments.preparing ||
-                        models.length === 0
-                      }
-                      onChange={(event) =>
-                        void run(() => changeModel(event.target.value))
-                      }
-                    >
-                      {!chosenModel ? (
-                        <option value={selectedModel}>
-                          {modelLoading
-                            ? "正在加载模型…"
-                            : selectedModel
-                            ? `${selectedModel}（不可用，请更换）`
-                            : "请选择模型"}
-                        </option>
-                      ) : null}
-                      {[
-                        { label: "文字聊天", image: false },
-                        { label: "图片生成", image: true },
-                      ].map((group) => {
-                        const options = models.filter(
-                          (model) => (model.kind === "image") === group.image,
-                        );
-                        return options.length ? (
-                          <optgroup key={group.label} label={group.label}>
-                            {options.map((model) => (
-                              <option key={model.id} value={model.id}>
-                                {model.name}
-                                {model.reasoning ? " · 推理" : ""}
-                                {modelDescription(model.id)
-                                  ? ` · ${modelDescription(model.id)}`
-                                  : ""}
-                              </option>
-                            ))}
-                          </optgroup>
-                        ) : null;
-                      })}
-                    </select>
-                  </label>
+                  <div
+                    className={`${styles.composerModelControls} ${
+                      chosenModel?.reasoning ? styles.withReasoning : ""
+                    }`}
+                  >
+                    <label className={styles.modelPicker}>
+                      <span>模型</span>
+                      <select
+                        aria-label="选择模型"
+                        title={modelDescription(selectedModel) || "选择模型"}
+                        value={selectedModel}
+                        disabled={
+                          sending ||
+                          working ||
+                          detailLoading ||
+                          modelLoading ||
+                          voice.busy ||
+                          realtimeBusy.current ||
+                          draftAttachments.preparing ||
+                          models.length === 0
+                        }
+                        onChange={(event) =>
+                          void run(() => changeModel(event.target.value))
+                        }
+                      >
+                        {!chosenModel ? (
+                          <option value={selectedModel}>
+                            {modelLoading
+                              ? "正在加载模型…"
+                              : selectedModel
+                              ? `${selectedModel}（不可用，请更换）`
+                              : "请选择模型"}
+                          </option>
+                        ) : null}
+                        {[
+                          { label: "文字聊天", image: false },
+                          { label: "图片生成", image: true },
+                        ].map((group) => {
+                          const options = models.filter(
+                            (model) => (model.kind === "image") === group.image,
+                          );
+                          return options.length ? (
+                            <optgroup key={group.label} label={group.label}>
+                              {options.map((model) => (
+                                <option key={model.id} value={model.id}>
+                                  {model.name}
+                                  {model.reasoning ? " · 推理" : ""}
+                                  {modelDescription(model.id)
+                                    ? ` · ${modelDescription(model.id)}`
+                                    : ""}
+                                </option>
+                              ))}
+                            </optgroup>
+                          ) : null;
+                        })}
+                      </select>
+                    </label>
+                    {chosenModel?.reasoning ? (
+                      <ReasoningEffortPicker
+                        value={reasoningEffort}
+                        onChange={setReasoningEffort}
+                        disabled={
+                          sending ||
+                          working ||
+                          checking ||
+                          detailLoading ||
+                          modelLoading ||
+                          voice.busy ||
+                          realtimeBusy.current ||
+                          draftAttachments.preparing ||
+                          !identityVerified.current
+                        }
+                      />
+                    ) : null}
+                  </div>
                   <div className={styles.voiceTools}>
                     <button
                       type="button"

@@ -17,7 +17,14 @@ import {
   completionBody,
   modelCatalog,
   isImageModelId,
+  isReasoningModelId,
+  validatedReasoningEffort,
 } from "./models";
+import {
+  DEFAULT_REASONING_EFFORT,
+  FAMILY_REASONING_EFFORTS,
+  type FamilyReasoningEffort,
+} from "../reasoning-types";
 import {
   DEFAULT_IMAGE_OPTIONS,
   FAMILY_IMAGE_SIZES,
@@ -99,6 +106,9 @@ function messageJson(row: Record<string, any>): FamilyMessage {
     requestedModel: row.requested_model ?? null,
     model: row.actual_model ?? null,
     superseded: !!row.superseded_at,
+    ...(FAMILY_REASONING_EFFORTS.includes(row.reasoning_effort)
+      ? { reasoningEffort: row.reasoning_effort as FamilyReasoningEffort }
+      : {}),
     ...(row.attachments?.length ? { attachments: row.attachments } : {}),
     ...(row.generatedImages?.length
       ? { generatedImages: row.generatedImages }
@@ -278,7 +288,7 @@ export async function chatDetail(
     beforePosition = pivot.position;
   }
   const messages = await getPool().query(
-    "SELECT m.*,g.model AS requested_model,g.actual_model,g.superseded_at,g.input_tokens,g.output_tokens,g.usage_source,g.image_size,g.image_quality FROM family_message m JOIN family_generation g ON g.id=m.generation_id WHERE m.chat_id=$1" +
+    "SELECT m.*,g.model AS requested_model,g.actual_model,g.superseded_at,g.input_tokens,g.output_tokens,g.usage_source,g.image_size,g.image_quality,g.reasoning_effort FROM family_message m JOIN family_generation g ON g.id=m.generation_id WHERE m.chat_id=$1" +
       (!userId && includeArchived ? "" : " AND g.superseded_at IS NULL") +
       " AND ($2::bigint IS NULL OR m.position<$2::bigint) ORDER BY m.position DESC LIMIT 81",
     [chatId, beforePosition],
@@ -343,6 +353,7 @@ interface GenerationStart {
   id: string;
   userId?: string;
   imageOptions?: FamilyImageOptions;
+  reasoningEffort?: FamilyReasoningEffort;
   assistantId: string;
   userMessage: FamilyMessage;
   assistantMessage: FamilyMessage;
@@ -391,6 +402,7 @@ interface GenerationIntent {
   requestedModel?: string;
   attachments: PreparedAttachment[];
   imageOptions?: FamilyImageOptions;
+  reasoningEffort?: FamilyReasoningEffort;
 }
 export function validatedImageOptions(value: unknown): FamilyImageOptions {
   if (
@@ -437,6 +449,7 @@ function generationIntent(body: Record<string, unknown>): GenerationIntent {
           "sourceMessageId",
           "attachments",
           "imageOptions",
+          "reasoningEffort",
         ].includes(key),
     )
   )
@@ -481,6 +494,9 @@ function generationIntent(body: Record<string, unknown>): GenerationIntent {
     sourceMessageId,
     requestedModel: body.model as string | undefined,
     attachments: [],
+    ...(Object.hasOwn(body, "reasoningEffort")
+      ? { reasoningEffort: validatedReasoningEffort(body.reasoningEffort) }
+      : {}),
     ...(body.imageOptions !== undefined
       ? { imageOptions: validatedImageOptions(body.imageOptions) }
       : {}),
@@ -491,6 +507,7 @@ function intentHash(
   intent: GenerationIntent,
   model: string,
   defaultOptions = DEFAULT_IMAGE_OPTIONS,
+  reasoningEffort?: FamilyReasoningEffort,
 ) {
   return digest(
     JSON.stringify({
@@ -499,6 +516,7 @@ function intentHash(
       model,
       mode: intent.mode,
       sourceMessageId: intent.sourceMessageId,
+      ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(isImageModelId(model)
         ? { imageOptions: intent.imageOptions ?? defaultOptions }
         : {}),
@@ -534,26 +552,54 @@ async function prepare(
   ).rows[0];
   if (existing) {
     const requested = intent.requestedModel ?? existing.model;
+    const reasoning = isReasoningModelId(requested);
+    if (!reasoning && intent.reasoningEffort !== undefined)
+      throw new FamilyApiError(
+        400,
+        "此模型不支持推理强度设置。",
+        "REASONING_EFFORT_UNSUPPORTED",
+      );
+    const reasoningEffort = reasoning
+      ? intent.reasoningEffort ??
+        (FAMILY_REASONING_EFFORTS.includes(existing.reasoning_effort)
+          ? (existing.reasoning_effort as FamilyReasoningEffort)
+          : DEFAULT_REASONING_EFFORT)
+      : undefined;
     if (!isImageModelId(requested) && intent.imageOptions)
       throw new FamilyApiError(
         400,
         "图片设置只适用于图片模型。",
         "INVALID_IMAGE_OPTIONS",
       );
+    const existingImageOptions =
+      existing.image_size && existing.image_quality
+        ? { size: existing.image_size, quality: existing.image_quality }
+        : DEFAULT_IMAGE_OPTIONS;
     const expected = intentHash(
       chatId,
       intent,
       requested,
-      existing.image_size && existing.image_quality
-        ? { size: existing.image_size, quality: existing.image_quality }
-        : DEFAULT_IMAGE_OPTIONS,
+      existingImageOptions,
+      reasoningEffort,
     );
+    // Before v9 all reasoning requests used low and had no effort in their hash.
+    // Only a genuinely legacy row can use that compatibility path.
+    const legacyLow =
+      reasoning &&
+      existing.reasoning_effort == null &&
+      reasoningEffort === DEFAULT_REASONING_EFFORT;
+    const legacyReasoning =
+      legacyLow &&
+      requested === existing.model &&
+      existing.request_hash ===
+        intentHash(chatId, intent, requested, existingImageOptions);
     const legacy =
       intent.mode === "send" &&
       !intent.sourceMessageId &&
       !intent.attachments.length &&
       !existing.has_attachments &&
       requested === existing.model &&
+      (!reasoning || legacyLow) &&
       existing.request_hash ===
         digest(JSON.stringify({ chatId, content: intent.content }));
     if (
@@ -561,7 +607,7 @@ async function prepare(
       (intent.mode === "send" &&
         !intent.attachments.length &&
         existing.has_attachments) ||
-      (existing.request_hash !== expected && !legacy)
+      (existing.request_hash !== expected && !legacy && !legacyReasoning)
     )
       throw new FamilyApiError(
         409,
@@ -582,7 +628,7 @@ async function prepare(
       );
     const messages = (
       await client.query(
-        "SELECT m.*,g.model AS requested_model,g.actual_model,g.superseded_at,g.input_tokens,g.output_tokens,g.usage_source,g.image_size,g.image_quality FROM family_message m JOIN family_generation g ON g.id=m.generation_id WHERE generation_id=$1 ORDER BY position",
+        "SELECT m.*,g.model AS requested_model,g.actual_model,g.superseded_at,g.input_tokens,g.output_tokens,g.usage_source,g.image_size,g.image_quality,g.reasoning_effort FROM family_message m JOIN family_generation g ON g.id=m.generation_id WHERE generation_id=$1 ORDER BY position",
         [existing.id],
       )
     ).rows;
@@ -616,6 +662,7 @@ async function prepare(
         generatedImages: generatedImages.get(messages[1].id),
       }),
       history: [],
+      reasoningEffort,
       replay: true,
       usage: usageJson(existing),
       model: {
@@ -639,6 +686,15 @@ async function prepare(
   const model = allowedModel(
     intent.requestedModel ?? owner.rows[0].model ?? modelCatalog().defaultModel,
   );
+  if (!model.reasoning && intent.reasoningEffort !== undefined)
+    throw new FamilyApiError(
+      400,
+      "此模型不支持推理强度设置。",
+      "REASONING_EFFORT_UNSUPPORTED",
+    );
+  let reasoningEffort = model.reasoning
+    ? intent.reasoningEffort ?? DEFAULT_REASONING_EFFORT
+    : undefined;
   if (model.kind !== "image" && intent.imageOptions)
     throw new FamilyApiError(
       400,
@@ -686,7 +742,7 @@ async function prepare(
       throw new FamilyApiError(404, "原消息不存在。", "MESSAGE_NOT_FOUND");
     const last = (
       await client.query(
-        "SELECT g.id,g.state,u.id AS user_message_id,u.content AS user_content,a.id AS assistant_message_id,g.image_size,g.image_quality FROM family_generation g JOIN family_message u ON u.generation_id=g.id AND u.role='user' JOIN family_message a ON a.generation_id=g.id AND a.role='assistant' WHERE g.chat_id=$1 AND g.superseded_at IS NULL ORDER BY u.position DESC LIMIT 1 FOR UPDATE OF g",
+        "SELECT g.id,g.state,u.id AS user_message_id,u.content AS user_content,a.id AS assistant_message_id,g.image_size,g.image_quality,g.reasoning_effort FROM family_generation g JOIN family_message u ON u.generation_id=g.id AND u.role='user' JOIN family_message a ON a.generation_id=g.id AND a.role='assistant' WHERE g.chat_id=$1 AND g.superseded_at IS NULL ORDER BY u.position DESC LIMIT 1 FOR UPDATE OF g",
         [chatId],
       )
     ).rows[0];
@@ -721,6 +777,13 @@ async function prepare(
     sourceUserMessage = last.user_message_id;
     replacedMessageIds = [last.user_message_id, last.assistant_message_id];
     if (intent.mode !== "edit") content = last.user_content;
+    if (
+      model.reasoning &&
+      intent.mode !== "edit" &&
+      intent.reasoningEffort === undefined &&
+      FAMILY_REASONING_EFFORTS.includes(last.reasoning_effort)
+    )
+      reasoningEffort = last.reasoning_effort;
     if (
       model.kind === "image" &&
       !intent.imageOptions &&
@@ -766,18 +829,19 @@ async function prepare(
   const userMessageId = randomUUID();
   const assistantId = randomUUID();
   await client.query(
-    "INSERT INTO family_generation(id,user_id,chat_id,request_id,request_hash,model,mode,source_generation_id,state,image_size,image_quality) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'running',$9,$10)",
+    "INSERT INTO family_generation(id,user_id,chat_id,request_id,request_hash,model,mode,source_generation_id,state,image_size,image_quality,reasoning_effort) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'running',$9,$10,$11)",
     [
       id,
       userId,
       chatId,
       requestId,
-      intentHash(chatId, intent, model.id, imageOptions),
+      intentHash(chatId, intent, model.id, imageOptions, reasoningEffort),
       model.id,
       intent.mode,
       sourceGeneration,
       imageOptions?.size ?? null,
       imageOptions?.quality ?? null,
+      reasoningEffort ?? null,
     ],
   );
   const rows = (
@@ -819,12 +883,18 @@ async function prepare(
     userId,
     assistantId,
     imageOptions,
+    reasoningEffort,
     userMessage: messageJson({
       ...rows[0],
       requested_model: model.id,
+      reasoning_effort: reasoningEffort,
       attachments,
     }),
-    assistantMessage: messageJson({ ...rows[1], requested_model: model.id }),
+    assistantMessage: messageJson({
+      ...rows[1],
+      requested_model: model.id,
+      reasoning_effort: reasoningEffort,
+    }),
     history,
     model,
     replacedMessageIds,
@@ -1057,7 +1127,11 @@ export async function generate(
                   "Content-Type": "application/json",
                 },
                 body: JSON.stringify(
-                  completionBody(started.model, started.history),
+                  completionBody(
+                    started.model,
+                    started.history,
+                    started.reasoningEffort,
+                  ),
                 ),
                 signal: abort.signal,
                 redirect: "error",
@@ -1271,6 +1345,7 @@ export async function finishGeneration(
         image_size: started.imageOptions?.size,
         image_quality: started.imageOptions?.quality,
         requested_model: started.model.id,
+        reasoning_effort: started.reasoningEffort,
         actual_model: actualModel,
       }),
       usage,

@@ -52,6 +52,7 @@ let existing: Record<string, any> | undefined,
   foreign = false,
   quota = false,
   savedHash: string | undefined;
+let savedEffort: unknown, sourceEffort: string | null;
 let linkedRows: Record<string, any>[],
   insertedMessageRows: Record<string, any>[],
   lastState = "complete";
@@ -68,6 +69,8 @@ beforeEach(() => {
   foreign = false;
   quota = false;
   savedHash = undefined;
+  savedEffort = undefined;
+  sourceEffort = null;
   linkedRows = [];
   insertedMessageRows = [];
   lastState = "complete";
@@ -123,6 +126,7 @@ beforeEach(() => {
           content: "Fixture question",
           status: "complete",
           created_at: date,
+          reasoning_effort: existing?.reasoning_effort,
         },
         {
           id: assistantId,
@@ -130,6 +134,7 @@ beforeEach(() => {
           content: "Old reply",
           status: "complete",
           created_at: date,
+          reasoning_effort: existing?.reasoning_effort,
         },
       ]);
     if (sql.startsWith("SELECT l.message_id")) return result(linkedRows);
@@ -148,12 +153,14 @@ beforeEach(() => {
           user_message_id: userMessageId,
           user_content: "Fixture question",
           assistant_message_id: assistantId,
+          reasoning_effort: sourceEffort,
         },
       ]);
     if (sql.startsWith("SELECT count(*)::int")) return result([{ count: 2 }]);
     if (sql.startsWith("SELECT m.id,m.generation_id")) return result();
     if (sql.startsWith("INSERT INTO family_generation(")) {
       savedHash = values[4] as string;
+      savedEffort = values[10];
       return result();
     }
     if (sql.startsWith("INSERT INTO family_message(")) {
@@ -242,6 +249,163 @@ function oldGeneration(hash: string, hasAttachments = false) {
     output_tokens: null,
   };
 }
+
+test.each([undefined, "low", "medium", "high"])(
+  "reasoning effort %s is validated, persisted and sent with bounded output",
+  async (reasoningEffort) => {
+    const stream = await generate({
+      content: "Fixture question",
+      model: "gpt-5-mini",
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+    });
+    const effective = reasoningEffort ?? "low";
+    const payload = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(payload.reasoning_effort).toBe(effective);
+    expect(payload.max_completion_tokens).toBe(2048);
+    expect(payload).not.toHaveProperty("service_tier");
+    expect(savedEffort).toBe(effective);
+    const events = stream
+      .trim()
+      .split("\n\n")
+      .map((s) => JSON.parse(s.slice(6)));
+    expect(events[0].userMessage.reasoningEffort).toBe(effective);
+    expect(events[0].assistantMessage.reasoningEffort).toBe(effective);
+    expect(events.find((e) => e.type === "done").message.reasoningEffort).toBe(
+      effective,
+    );
+  },
+);
+
+test.each(["max", "xhigh", "ultra", "none", "", null, 1, {}])(
+  "invalid reasoning strength %p is rejected before generation or provider calls",
+  async (reasoningEffort) => {
+    await expect(
+      generate({ content: "Question", model: "gpt-5-mini", reasoningEffort }),
+    ).rejects.toMatchObject({ status: 400, code: "INVALID_REASONING_EFFORT" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(query.mock.calls.some(([sql]) => sql.startsWith("INSERT"))).toBe(
+      false,
+    );
+  },
+);
+
+test.each(["gpt-4o-mini", "gpt-image-1.5"])(
+  "%s rejects an explicit reasoning strength rather than ignoring it",
+  async (model) => {
+    await expect(
+      generate({ content: "Question", model, reasoningEffort: "low" }),
+    ).rejects.toMatchObject({
+      status: 400,
+      code: "REASONING_EFFORT_UNSUPPORTED",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(query.mock.calls.some(([sql]) => sql.startsWith("INSERT"))).toBe(
+      false,
+    );
+  },
+);
+
+test("ordinary model omits effort upstream and stores null", async () => {
+  const stream = await generate({ content: "Fixture question" });
+  expect(
+    JSON.parse(String(fetchMock.mock.calls[0][1]?.body)),
+  ).not.toHaveProperty("reasoning_effort");
+  expect(savedEffort).toBeNull();
+  expect(stream).not.toContain("reasoningEffort");
+});
+
+test("a high request replays with its persisted strength, while changing strength conflicts without billing", async () => {
+  await generate({
+    content: "Fixture question",
+    model: "gpt-5-mini",
+    reasoningEffort: "high",
+  });
+  existing = {
+    ...oldGeneration(savedHash!),
+    model: "gpt-5-mini",
+    reasoning_effort: "high",
+  };
+  query.mockClear();
+  fetchMock.mockClear();
+  const stream = await generate({
+    content: "Fixture question",
+    model: "gpt-5-mini",
+  });
+  expect(stream).toContain('"reasoningEffort":"high"');
+  await expect(
+    generate({
+      content: "Fixture question",
+      model: "gpt-5-mini",
+      reasoningEffort: "low",
+    }),
+  ).rejects.toMatchObject({ status: 409, code: "REQUEST_CONFLICT" });
+  expect(fetchMock).not.toHaveBeenCalled();
+  expect(query.mock.calls.some(([sql]) => sql.startsWith("INSERT"))).toBe(
+    false,
+  );
+});
+
+test.each(["minimal", "v8"])(
+  "a %s legacy null-effort nonce only permits low compatibility",
+  async (kind) => {
+    const hash = digest(
+      JSON.stringify(
+        kind === "minimal"
+          ? { chatId, content: "Fixture question" }
+          : {
+              chatId,
+              content: "Fixture question",
+              model: "gpt-5-mini",
+              mode: "send",
+              sourceMessageId: null,
+            },
+      ),
+    );
+    existing = {
+      ...oldGeneration(hash),
+      model: "gpt-5-mini",
+      reasoning_effort: null,
+    };
+    await generate({
+      content: "Fixture question",
+      model: "gpt-5-mini",
+      reasoningEffort: "low",
+    });
+    await expect(
+      generate({
+        content: "Fixture question",
+        model: "gpt-5-mini",
+        reasoningEffort: "high",
+      }),
+    ).rejects.toMatchObject({ status: 409, code: "REQUEST_CONFLICT" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(query.mock.calls.some(([sql]) => sql.startsWith("INSERT"))).toBe(
+      false,
+    );
+  },
+);
+
+test.each(["retry", "regenerate"])(
+  "%s inherits source strength unless the request supplies a new valid strength",
+  async (mode) => {
+    lastState = mode === "retry" ? "partial" : "complete";
+    sourceEffort = "high";
+    await generate({ mode, sourceMessageId: assistantId, model: "gpt-5-mini" });
+    const highHash = savedHash;
+    expect(savedEffort).toBe("high");
+    expect(
+      JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).reasoning_effort,
+    ).toBe("high");
+    await generate({
+      mode,
+      sourceMessageId: assistantId,
+      model: "gpt-5-mini",
+      reasoningEffort: "medium",
+    });
+    expect(savedEffort).toBe("medium");
+    expect(savedHash).not.toBe(highHash);
+  },
+);
 
 test("attachment-only send saves one private blob atomically and includes its text in fixed upstream payload", async () => {
   const stream = await generate({ content: "", attachments: [input()] });
