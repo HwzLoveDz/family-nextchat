@@ -269,7 +269,27 @@ export function useFamilyVoice(options: {
       sequence: number,
       cachedOnly: boolean,
     ) => {
-      if (sequence !== playSequence.current || !matches(item.scope)) return;
+      const discardUnverifiedPlayback = () => {
+        if (sequence !== playSequence.current) return;
+        const now = latest.current.getScope();
+        if (
+          now.verified ||
+          now.epoch !== item.scope.epoch ||
+          now.userId !== item.scope.userId ||
+          now.chatId !== item.scope.chatId ||
+          now.model !== item.scope.model ||
+          document.visibilityState !== "visible"
+        )
+          return;
+        stopPlayback();
+        saved.current.clear();
+        currentSaved.current = null;
+        latest.current.onError("朗读已停止，请确认登录状态后重试。");
+      };
+      if (sequence !== playSequence.current || !matches(item.scope)) {
+        discardUnverifiedPlayback();
+        return;
+      }
       try {
         let blob = item.parts.get(part);
         if (!blob) {
@@ -314,7 +334,10 @@ export function useFamilyVoice(options: {
           )
             throw new Error("语音响应格式不正确，请稍后重试。");
           blob = payload as Blob;
-          if (sequence !== playSequence.current || !matches(item.scope)) return;
+          if (sequence !== playSequence.current || !matches(item.scope)) {
+            discardUnverifiedPlayback();
+            return;
+          }
           if (blob.size > 8 * 1024 * 1024)
             throw new Error("语音片段过大，请稍后重试。");
           item.count = count;
@@ -323,13 +346,19 @@ export function useFamilyVoice(options: {
           );
           item.parts.set(part, blob);
         }
-        if (sequence !== playSequence.current || !matches(item.scope)) return;
+        if (sequence !== playSequence.current || !matches(item.scope)) {
+          discardUnverifiedPlayback();
+          return;
+        }
         releaseAudio();
         objectUrl.current = URL.createObjectURL(blob);
         const player = new Audio(objectUrl.current);
         audio.current = player;
         player.onended = () => {
-          if (sequence !== playSequence.current || !matches(item.scope)) return;
+          if (sequence !== playSequence.current || !matches(item.scope)) {
+            discardUnverifiedPlayback();
+            return;
+          }
           releaseAudio();
           if (part + 1 < item.count)
             void playPartRef.current(item, part + 1, sequence, cachedOnly);
@@ -344,6 +373,10 @@ export function useFamilyVoice(options: {
         };
         player.onerror = () => {
           if (sequence === playSequence.current) {
+            if (!matches(item.scope)) {
+              discardUnverifiedPlayback();
+              return;
+            }
             releaseAudio();
             updatePlayback(IDLE_PLAYBACK);
             latest.current.onError("语音播放失败，可点朗读重试。");
@@ -359,6 +392,7 @@ export function useFamilyVoice(options: {
               parts: item.count,
               truncated: item.truncated,
             });
+          else discardUnverifiedPlayback();
         } catch {
           if (sequence === playSequence.current && matches(item.scope))
             updatePlayback({
@@ -368,6 +402,7 @@ export function useFamilyVoice(options: {
               parts: item.count,
               truncated: item.truncated,
             });
+          else discardUnverifiedPlayback();
         }
       } catch (failure) {
         if (sequence === playSequence.current && matches(item.scope)) {
@@ -380,10 +415,10 @@ export function useFamilyVoice(options: {
               ? failure.message
               : "朗读失败，请重试。",
           );
-        }
+        } else discardUnverifiedPlayback();
       }
     },
-    [fetchVoice, matches, releaseAudio, updatePlayback],
+    [fetchVoice, matches, releaseAudio, stopPlayback, updatePlayback],
   );
   playPartRef.current = playPart;
   const speak = useCallback(

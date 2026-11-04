@@ -58,6 +58,10 @@ function inputWav(seconds = 1) {
   return wav;
 }
 const usage = { input_tokens: 11, output_tokens: 7 };
+const sessionCreated = {
+  type: "session.created",
+  session: { type: "realtime", model: "gpt-realtime-2.1-mini" },
+};
 const created = { type: "response.created", response: { id: "resp_fixture" } };
 function done(status = "completed") {
   return {
@@ -245,11 +249,9 @@ describe("current provider request boundaries and WebSocket cleanup", () => {
     );
     expect(socket.options.followRedirects).toBe(false);
     expect(socket.options.maxPayload).toBe(524288);
+    expect(socket.send).not.toHaveBeenCalled();
+    frame(socket, sessionCreated);
     expect(socket.send).toHaveBeenCalledTimes(1);
-    frame(socket, {
-      type: "session.created",
-      session: { model: "gpt-realtime-2.1-mini" },
-    });
     frame(socket, created);
     frame(socket, {
       type: "response.output_audio.delta",
@@ -434,6 +436,8 @@ describe("current provider request boundaries and WebSocket cleanup", () => {
       message: "语音服务暂时不可用，请稍后再试。",
     });
     const socket = FixtureSocket.instances[0];
+    socket.emit("open");
+    frame(socket, sessionCreated);
     frame(socket, created);
     frame(socket, {
       ...done("failed"),
@@ -545,6 +549,7 @@ describe("voice credential fallback is restricted to explicit unstarted quota re
     );
   function completeSpeech(socket: FixtureSocket) {
     socket.emit("open");
+    frame(socket, sessionCreated);
     frame(socket, created);
     frame(socket, {
       type: "response.output_audio.delta",
@@ -741,8 +746,138 @@ describe("voice credential fallback is restricted to explicit unstarted quota re
     expect(FixtureSocket.instances).toHaveLength(1);
     expect(FixtureSocket.instances[0].terminate).toHaveBeenCalledTimes(1);
   });
+  test("initial quota events send no text and release both rejected sockets before the fallback generates once", async () => {
+    jest.useFakeTimers({
+      doNotFake: ["nextTick", "setImmediate", "queueMicrotask"],
+    });
+    process.env.FAMILY_OPENAI_PRIORITY_KEYS = JSON.stringify([
+      ...fixtureCredentials,
+      { name: "synthetic-backstop", key: "synthetic-backstop-key-not-real" },
+    ]);
+    const evidence = provider.newVoiceEvidence();
+    const signal = new AbortController().signal;
+    FixtureSocket.onConstruct = (socket) => {
+      const previous = FixtureSocket.instances.slice(0, -1);
+      for (const rejected of previous) {
+        expect(rejected.send).not.toHaveBeenCalled();
+        expect(rejected.terminate).toHaveBeenCalledTimes(1);
+        expect(rejected.listenerCount("message")).toBe(0);
+      }
+      queueMicrotask(() => {
+        if (FixtureSocket.instances.length < 3) {
+          socket.emit("open");
+          expect(socket.send).not.toHaveBeenCalled();
+          frame(socket, {
+            type: "error",
+            error: {
+              code: "credit_balance_exhausted",
+              type: "insufficient_quota",
+              message: "private-provider-body",
+            },
+          });
+        } else completeSpeech(socket);
+      });
+    };
+    await expect(
+      withProviderKey(
+        ({ key }) => provider.requestSpeech(key, "合成朗读", signal, evidence),
+        signal,
+      ),
+    ).resolves.toHaveLength(48);
+    expect(FixtureSocket.instances).toHaveLength(3);
+    expect(FixtureSocket.instances[2].send).toHaveBeenCalledTimes(1);
+    expect(FixtureSocket.instances[2].terminate).toHaveBeenCalledTimes(1);
+    expect(evidence.usage.inputTokens).toBe(11);
+    expect(jest.getTimerCount()).toBe(0);
+    expect(JSON.stringify(diagnostics)).not.toMatch(
+      /private-provider-body|synthetic-.*-key|合成朗读/,
+    );
+  });
+  test.each([
+    { type: "error", error: { code: "rate_limit_exceeded" } },
+    { type: "error", error: { code: "invalid_api_key" } },
+    { type: "error", error: { code: "unknown_error" } },
+    { type: "error" },
+    { type: "session.created", session: {} },
+    {
+      type: "session.created",
+      session: { type: "transcription", model: provider.SPEECH_MODEL },
+    },
+    {
+      type: "session.created",
+      session: { type: "realtime", model: "gpt-transcribe" },
+    },
+    {
+      type: "session.created",
+      session: { type: "realtime", model: `${provider.SPEECH_MODEL}wrong` },
+    },
+    { type: "response.created", response: { id: "unexpected" } },
+  ])(
+    "an unaccepted non-quota first frame cannot generate or switch: %p",
+    async (event) => {
+      const signal = new AbortController().signal;
+      const pending = withProviderKey(
+        ({ key }) =>
+          provider.requestSpeech(
+            key,
+            "合成朗读",
+            signal,
+            provider.newVoiceEvidence(),
+          ),
+        signal,
+      );
+      const rejected = expect(pending).rejects.toMatchObject({
+        code: "VOICE_PROVIDER_ERROR",
+      });
+      const socket = await preparedSocket();
+      socket.emit("open");
+      frame(socket, event);
+      await rejected;
+      expect(FixtureSocket.instances).toHaveLength(1);
+      expect(socket.send).not.toHaveBeenCalled();
+      expect(socket.terminate).toHaveBeenCalledTimes(1);
+    },
+  );
+  test("cancelling while waiting for the initial session neither sends nor switches", async () => {
+    const controller = new AbortController();
+    const pending = withProviderKey(
+      ({ key }) =>
+        provider.requestSpeech(
+          key,
+          "合成朗读",
+          controller.signal,
+          provider.newVoiceEvidence(),
+        ),
+      controller.signal,
+    );
+    const rejected = expect(pending).rejects.toBeDefined();
+    const socket = await preparedSocket();
+    socket.emit("open");
+    controller.abort();
+    await rejected;
+    expect(FixtureSocket.instances).toHaveLength(1);
+    expect(socket.send).not.toHaveBeenCalled();
+    expect(socket.terminate).toHaveBeenCalledTimes(1);
+    expect(socket.listenerCount("message")).toBe(0);
+  });
+  test("duplicate session greetings cannot send a second generation request", async () => {
+    const signal = new AbortController().signal;
+    const pending = provider.requestSpeech(
+      "synthetic-key-not-real",
+      "合成朗读",
+      signal,
+      provider.newVoiceEvidence(),
+    );
+    const socket = FixtureSocket.instances[0];
+    socket.emit("open");
+    frame(socket, sessionCreated);
+    frame(socket, sessionCreated);
+    completeSpeech(socket);
+    await expect(pending).resolves.toHaveLength(48);
+    expect(socket.send).toHaveBeenCalledTimes(1);
+  });
   test.each(["provider-event", "late-handshake"])(
-    "an opened WS %s quota-looking failure never creates a second generation",
+    "an accepted WS %s quota-looking failure never creates a second generation",
     async (mode) => {
       const signal = new AbortController().signal;
       const pending = withProviderKey(
@@ -760,6 +895,7 @@ describe("voice credential fallback is restricted to explicit unstarted quota re
       });
       const socket = await preparedSocket();
       socket.emit("open");
+      frame(socket, sessionCreated);
       if (mode === "provider-event")
         frame(socket, {
           type: "error",

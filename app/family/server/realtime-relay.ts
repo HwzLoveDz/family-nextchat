@@ -11,7 +11,12 @@ import {
 } from "../realtime-types";
 import type { FamilyUsage } from "../types";
 import { FamilyApiError } from "./errors";
-import { withProviderKey, rejectExhaustedQuota } from "./provider-keys";
+import {
+  withProviderKey,
+  rejectExhaustedQuota,
+  isQuotaExhaustedDetails,
+  ProviderQuotaExhaustedError,
+} from "./provider-keys";
 import { voiceUsage, unknownVoiceUsage } from "./voice-media";
 import {
   type RealtimeContext,
@@ -176,7 +181,7 @@ const providerFailure = () =>
     "REALTIME_PROVIDER_ERROR",
   );
 
-/** Owns both sockets and all per-connection timers. Never replays an opened session. */
+/** Owns both sockets and all per-connection timers. Never replays an accepted session. */
 export async function startRealtimeRelay(
   peer: RealtimePeer,
   context: RealtimeContext,
@@ -1000,6 +1005,7 @@ export async function startRealtimeRelay(
         new Promise<void>((resolve, reject) => {
           let socket: WebSocket;
           let opened = false;
+          let accepted = false;
           let settled = false;
           let rejection: IncomingMessage | undefined;
           const fail = (error: unknown) => {
@@ -1009,11 +1015,16 @@ export async function startRealtimeRelay(
             rejection?.destroy();
             socket?.removeAllListeners();
             socket?.on("error", () => {});
-            socket?.terminate();
+            if (socket) sockets.delete(socket);
+            try {
+              socket?.terminate();
+            } catch {
+              /* Rejection cleanup cannot prevent the next credential attempt. */
+            }
             reject(error);
           };
           const abort = () => {
-            if (!opened) fail(new DOMException("请求已取消。", "AbortError"));
+            if (!accepted) fail(new DOMException("请求已取消。", "AbortError"));
           };
           try {
             socket = new WebSocket(
@@ -1032,18 +1043,61 @@ export async function startRealtimeRelay(
                 return;
               }
               opened = true;
-              settled = true;
-              upstream = socket;
-              controller.signal.removeEventListener("abort", abort);
-              resolve();
             });
-            socket.on("message", handleProvider);
+            socket.on("message", (raw: RawData, binary: boolean) => {
+              if (accepted) {
+                handleProvider(raw, binary);
+                return;
+              }
+              if (settled) return;
+              if (stopping || controller.signal.aborted) {
+                abort();
+                return;
+              }
+              try {
+                if (!opened || binary) throw providerFailure();
+                const event = object(
+                  JSON.parse(
+                    new TextDecoder("utf-8", { fatal: true }).decode(
+                      rawBytes(raw, MAX_PROVIDER_FRAME),
+                    ),
+                  ),
+                );
+                // HTTP 101 is not session acceptance. An explicit quota rejection
+                // in the first frame is safe to retry: upstream is still unset,
+                // so no session.update, history, or microphone data was sent.
+                if (
+                  event.type === "error" &&
+                  isQuotaExhaustedDetails(event.error)
+                )
+                  throw new ProviderQuotaExhaustedError();
+                if (event.type !== "session.created") throw providerFailure();
+                const session = object(event.session);
+                if (
+                  session.type !== "realtime" ||
+                  !expectedSessionModel(session.model, context.model)
+                )
+                  throw providerFailure();
+                accepted = true;
+                settled = true;
+                upstream = socket;
+                controller.signal.removeEventListener("abort", abort);
+                resolve();
+                handleProvider(raw, binary);
+              } catch (error) {
+                fail(
+                  error instanceof ProviderQuotaExhaustedError
+                    ? error
+                    : providerFailure(),
+                );
+              }
+            });
             socket.on("error", () => {
-              if (!opened) fail(providerFailure());
+              if (!accepted) fail(providerFailure());
               else close("provider_disconnected", 1011, true);
             });
             socket.on("close", () => {
-              if (!opened) fail(providerFailure());
+              if (!accepted) fail(providerFailure());
               else if (!stopping) close("provider_disconnected", 1011, true);
             });
             socket.on("unexpected-response", async (_request, response) => {

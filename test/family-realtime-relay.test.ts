@@ -1000,7 +1000,7 @@ test("the runtime deadline shortens rotation and leaves finalization time", asyn
   expect(peer.close).toHaveBeenCalledWith(1012, "rotation");
 });
 
-test("only explicit quota before open switches credentials, and no opened provider error retries", async () => {
+test("only explicit quota before acceptance switches credentials, and no accepted provider error retries", async () => {
   environment.FAMILY_OPENAI_PRIORITY_KEYS = JSON.stringify([
     { name: "第一", key: "fixture-key-one" },
     { name: "第二", key: "fixture-key-two" },
@@ -1032,6 +1032,185 @@ test("only explicit quota before open switches credentials, and no opened provid
   await call.done;
   expect(FixtureSocket.instances).toHaveLength(2);
   expect(JSON.stringify(call.peer.sent)).not.toContain(rawSecret);
+});
+
+test("HTTP 101 sends nothing and remains cancellable until a valid session is accepted", async () => {
+  const call = launch({ history: [{ role: "user", content: rawSecret }] });
+  await flush();
+  const socket = FixtureSocket.instances[0];
+  socket.open();
+  await flush();
+  expect(socket.sent).toEqual([]);
+  expect(call.peer.sent.some((event) => event.type === "ready")).toBe(false);
+
+  call.peer.control({ type: "end" });
+  await call.done;
+  expect(socket.terminate).toHaveBeenCalledTimes(1);
+  expect(socket.listenerCount("message")).toBe(0);
+  expect(release).toHaveBeenCalledTimes(1);
+  expect(jest.getTimerCount()).toBe(0);
+});
+
+test("initial WebSocket quota rejections advance keys without sending history, audio, or configuration to rejected keys", async () => {
+  environment.FAMILY_OPENAI_PRIORITY_KEYS = JSON.stringify([
+    { name: "第一", key: "fixture-key-one" },
+    { name: "第二", key: "fixture-key-two" },
+    { name: "第三", key: "fixture-key-three" },
+  ]);
+  const call = launch({ history: [{ role: "user", content: rawSecret }] });
+  await flush();
+  for (let index = 0; index < 2; index++) {
+    const socket = FixtureSocket.instances[index];
+    socket.open();
+    expect(socket.sent).toEqual([]);
+    socket.event({
+      type: "error",
+      error: {
+        code: "credit_balance_exhausted",
+        type: "insufficient_quota",
+        message: rawSecret,
+      },
+    });
+    await flush();
+    expect(FixtureSocket.instances).toHaveLength(index + 2);
+    expect(socket.terminate).toHaveBeenCalledTimes(1);
+    expect(socket.listenerCount("message")).toBe(0);
+    // A rejected socket cannot initialize the later accepted credential.
+    socket.event({
+      type: "session.created",
+      session: { type: "realtime", model: REALTIME_MODEL },
+    });
+    expect(socket.sent).toEqual([]);
+  }
+
+  const accepted = FixtureSocket.instances[2];
+  accepted.open();
+  expect(accepted.sent).toEqual([]);
+  accepted.event({
+    type: "session.created",
+    session: { type: "realtime", model: REALTIME_MODEL },
+  });
+  expect(accepted.sent.map((event) => event.type)).toEqual(["session.update"]);
+  accepted.event({
+    type: "session.updated",
+    session: { type: "realtime", model: REALTIME_MODEL },
+  });
+  const history = accepted.sent.find(
+    (event) => event.type === "conversation.item.create",
+  )!;
+  expect(history.item.content[0].text).toBe(rawSecret);
+  accepted.event({ type: "conversation.item.created", item: history.item });
+  await flush();
+  expect(call.peer.sent.filter((event) => event.type === "ready")).toHaveLength(
+    1,
+  );
+  call.peer.audio(Buffer.alloc(4800));
+  expect(
+    accepted.sent.filter((event) => event.type === "input_audio_buffer.append"),
+  ).toHaveLength(1);
+  for (const rejected of FixtureSocket.instances.slice(0, 2))
+    expect(rejected.sent).toEqual([]);
+  expect(JSON.stringify(call.peer.sent)).not.toContain(rawSecret);
+});
+
+test.each([
+  { code: "rate_limit_exceeded", type: "insufficient_quota" },
+  { code: "invalid_api_key", type: "authentication_error" },
+  { code: "unknown_error", type: "insufficient_quota" },
+  { message: "insufficient_quota" },
+  {},
+])(
+  "an initial non-quota provider error never switches credentials: %j",
+  async (error) => {
+    environment.FAMILY_OPENAI_PRIORITY_KEYS = JSON.stringify([
+      { name: "第一", key: "fixture-key-one" },
+      { name: "第二", key: "fixture-key-two" },
+    ]);
+    const call = launch();
+    await flush();
+    const first = FixtureSocket.instances[0];
+    first.open();
+    first.event({ type: "error", error: { ...error, message: rawSecret } });
+    await call.done;
+    expect(FixtureSocket.instances).toHaveLength(1);
+    expect(first.sent).toEqual([]);
+    expect(JSON.stringify(call.peer.sent)).not.toContain(rawSecret);
+  },
+);
+
+test.each([
+  {
+    type: "session.created",
+    session: { type: "transcription", model: REALTIME_MODEL },
+  },
+  {
+    type: "session.created",
+    session: { type: "realtime", model: "gpt-wrong-model" },
+  },
+  { type: "conversation.created", conversation: { id: "conv_fixture" } },
+])(
+  "invalid initial session events cannot send client frames or enable later quota failover: %j",
+  async (event) => {
+    environment.FAMILY_OPENAI_PRIORITY_KEYS = JSON.stringify([
+      { name: "第一", key: "fixture-key-one" },
+      { name: "第二", key: "fixture-key-two" },
+    ]);
+    const call = launch();
+    await flush();
+    const first = FixtureSocket.instances[0];
+    first.open();
+    first.event(event);
+    first.event({ type: "error", error: { code: "credit_balance_exhausted" } });
+    await call.done;
+    expect(FixtureSocket.instances).toHaveLength(1);
+    expect(first.sent).toEqual([]);
+    expect(call.peer.sent.some((value) => value.type === "ready")).toBe(false);
+  },
+);
+
+test.each(["error", "close"])(
+  "WebSocket %s after HTTP 101 but before session acceptance fails without trying another key",
+  async (event) => {
+    environment.FAMILY_OPENAI_PRIORITY_KEYS = JSON.stringify([
+      { name: "第一", key: "fixture-key-one" },
+      { name: "第二", key: "fixture-key-two" },
+    ]);
+    const call = launch();
+    await flush();
+    const first = FixtureSocket.instances[0];
+    first.open();
+    first.emit(event, new Error(rawSecret));
+    await call.done;
+    expect(FixtureSocket.instances).toHaveLength(1);
+    expect(first.sent).toEqual([]);
+    expect(first.terminate).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(call.peer.sent)).not.toContain(rawSecret);
+    expect(jest.getTimerCount()).toBe(0);
+  },
+);
+
+test("a silent HTTP 101 connection times out without switching credentials or leaving pending startup work", async () => {
+  environment.FAMILY_OPENAI_PRIORITY_KEYS = JSON.stringify([
+    { name: "第一", key: "fixture-key-one" },
+    { name: "第二", key: "fixture-key-two" },
+  ]);
+  const call = launch();
+  await flush();
+  const first = FixtureSocket.instances[0];
+  first.open();
+  await jest.advanceTimersByTimeAsync(15_000);
+  await call.done;
+  expect(FixtureSocket.instances).toHaveLength(1);
+  expect(first.sent).toEqual([]);
+  expect(first.terminate).toHaveBeenCalledTimes(1);
+  expect(call.peer.sent).toContainEqual(
+    expect.objectContaining({
+      type: "error",
+      code: "REALTIME_CONNECT_TIMEOUT",
+    }),
+  );
+  expect(release).toHaveBeenCalledTimes(1);
+  expect(jest.getTimerCount()).toBe(0);
 });
 
 test("unknown/rate-limit handshake errors never consume a second credential", async () => {

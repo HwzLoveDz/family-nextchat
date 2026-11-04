@@ -222,6 +222,8 @@ const MessageBody = memo(function MessageBody({
   copied = false,
   onSpeak,
   speechDisabled = false,
+  speechLoading = false,
+  speechChecking = false,
   attachmentScope,
   attachmentAdmin = false,
   onAttachmentUnauthorized = () => {},
@@ -232,6 +234,8 @@ const MessageBody = memo(function MessageBody({
   copied?: boolean;
   onSpeak?: (message: FamilyMessage) => void;
   speechDisabled?: boolean;
+  speechLoading?: boolean;
+  speechChecking?: boolean;
   attachmentScope?: AttachmentScope;
   attachmentAdmin?: boolean;
   onAttachmentUnauthorized?: () => void;
@@ -327,11 +331,19 @@ const MessageBody = memo(function MessageBody({
         <button
           type="button"
           className={`${styles.textButton} ${styles.copyButton}`}
-          disabled={speechDisabled}
+          disabled={speechDisabled || speechLoading || speechChecking}
           onClick={() => onSpeak(message)}
           aria-label="朗读回复"
+          aria-busy={speechLoading}
+          title={
+            speechLoading
+              ? "正在生成语音，请稍候。可以在播放条中停止。"
+              : speechChecking
+              ? "确认登录状态后可朗读。"
+              : undefined
+          }
         >
-          朗读 · AI声音
+          {speechLoading ? "正在生成语音…" : "朗读 · AI声音"}
         </button>
       ) : null}
     </article>
@@ -3503,11 +3515,23 @@ export function FamilyApp() {
                           attachmentScope={attachmentReadScope(selectedChat)}
                           onAttachmentUnauthorized={() => void checkIdentity()}
                           onSpeak={(reply) => {
-                            if (selectedChat && !realtimeBusy.current)
+                            if (
+                              selectedChat &&
+                              !realtimeBusy.current &&
+                              !checking &&
+                              identityVerified.current &&
+                              voice.playback.status !== "loading"
+                            )
                               void voice.speak(selectedChat, reply);
                           }}
+                          speechLoading={
+                            voice.playback.status === "loading" &&
+                            voice.playback.messageId === message.id
+                          }
+                          speechChecking={checking || !identityVerified.current}
                           speechDisabled={
                             realtimeBusy.current ||
+                            voice.playback.status === "loading" ||
                             voice.phase !== "idle" ||
                             sending ||
                             cancelPending ||

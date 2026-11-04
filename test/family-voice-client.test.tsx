@@ -244,6 +244,362 @@ describe("family voice browser lifecycle without real media or networks", () => 
     hook.unmount();
   });
 
+  test.each(["response", "body"])(
+    "a deferred speech %s discarded during identity checking leaves idle without replay or a second request",
+    async (stage) => {
+      let scope: VoiceScope = {
+        epoch: 1,
+        userId: "member-a",
+        chatId: "chat-a",
+        model: "model-a",
+        verified: true,
+        canRecord: true,
+      };
+      const message: FamilyMessage = {
+        id: "assistant-a",
+        role: "assistant",
+        status: "complete",
+        content: "确认期间不应播放的合成语音",
+        createdAt: "2026-10-30T00:00:00Z",
+      };
+      let finishResponse!: (response: Response) => void;
+      const responsePending = new Promise<Response>((resolve) => {
+        finishResponse = resolve;
+      });
+      let finishBody!: (blob: Blob) => void;
+      const bodyPending = new Promise<Blob>((resolve) => {
+        finishBody = resolve;
+      });
+      const response = {
+        ok: true,
+        status: 200,
+        headers: new Headers({
+          "Content-Type": "audio/wav",
+          "X-Family-Voice-Parts": "1",
+          "X-Family-Voice-Part": "0",
+        }),
+        blob: jest.fn(() => bodyPending),
+      } as unknown as Response;
+      const fetched = jest.fn(async () =>
+        stage === "response" ? responsePending : response,
+      );
+      global.fetch = fetched as typeof fetch;
+      const audio = jest.fn();
+      const createUrl = jest.fn(() => "blob:unverified");
+      property(window, "Audio", audio);
+      property(URL, "createObjectURL", createUrl);
+      property(URL, "revokeObjectURL", jest.fn());
+      property(crypto, "randomUUID", () => "synthetic-read-request");
+      const error = jest.fn();
+      const transcript = jest.fn();
+      const hook = renderHook(() =>
+        useFamilyVoice({
+          getScope: () => scope,
+          onTranscript: transcript,
+          onError: error,
+          onUnauthorized: jest.fn(),
+        }),
+      );
+      let playing!: Promise<void>;
+      act(() => {
+        playing = hook.result.current.speak("chat-a", message);
+      });
+      await waitFor(() => expect(fetched).toHaveBeenCalledTimes(1));
+      expect(hook.result.current.playback.status).toBe("loading");
+      if (stage === "body")
+        await waitFor(() => expect(response.blob).toHaveBeenCalledTimes(1));
+      scope = { ...scope, verified: false };
+      await act(async () => {
+        finishBody(new Blob([new Uint8Array(44)], { type: "audio/wav" }));
+        finishResponse(response);
+        await playing;
+      });
+      expect(hook.result.current.playback.status).toBe("idle");
+      expect(error).toHaveBeenCalledWith("朗读已停止，请确认登录状态后重试。");
+      expect(audio).not.toHaveBeenCalled();
+      expect(createUrl).not.toHaveBeenCalled();
+      expect(transcript).not.toHaveBeenCalled();
+      scope = { ...scope, verified: true };
+      await act(async () => {
+        hook.result.current.replay();
+        await hook.result.current.resume();
+      });
+      expect(fetched).toHaveBeenCalledTimes(1);
+      expect(audio).not.toHaveBeenCalled();
+      expect(hook.result.current.playback.status).toBe("idle");
+      hook.unmount();
+    },
+  );
+
+  test("identity checking during a pending play releases audio and discards its cached clip", async () => {
+    let scope: VoiceScope = {
+      epoch: 1,
+      userId: "member-a",
+      chatId: "chat-a",
+      model: "model-a",
+      verified: true,
+      canRecord: true,
+    };
+    const message: FamilyMessage = {
+      id: "assistant-a",
+      role: "assistant",
+      status: "complete",
+      content: "合成语音",
+      createdAt: "2026-10-30T00:00:00Z",
+    };
+    let finishPlay!: () => void;
+    const playPending = new Promise<void>((resolve) => {
+      finishPlay = resolve;
+    });
+    const player = {
+      play: jest.fn(() => playPending),
+      pause: jest.fn(),
+      removeAttribute: jest.fn(),
+      load: jest.fn(),
+    };
+    const audio = jest.fn(() => player);
+    property(window, "Audio", audio);
+    property(
+      URL,
+      "createObjectURL",
+      jest.fn(() => "blob:pending-play"),
+    );
+    const revoke = jest.fn();
+    property(URL, "revokeObjectURL", revoke);
+    property(crypto, "randomUUID", () => "synthetic-pending-play");
+    const fetched = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({
+        "Content-Type": "audio/wav",
+        "X-Family-Voice-Parts": "1",
+        "X-Family-Voice-Part": "0",
+      }),
+      blob: async () => new Blob([new Uint8Array(44)], { type: "audio/wav" }),
+    }));
+    global.fetch = fetched as typeof fetch;
+    const error = jest.fn();
+    const hook = renderHook(() =>
+      useFamilyVoice({
+        getScope: () => scope,
+        onTranscript: jest.fn(),
+        onError: error,
+        onUnauthorized: jest.fn(),
+      }),
+    );
+    let playing!: Promise<void>;
+    act(() => {
+      playing = hook.result.current.speak("chat-a", message);
+    });
+    await waitFor(() => expect(player.play).toHaveBeenCalledTimes(1));
+    scope = { ...scope, verified: false };
+    await act(async () => {
+      finishPlay();
+      await playing;
+    });
+    expect(hook.result.current.playback.status).toBe("idle");
+    expect(player.pause).toHaveBeenCalledTimes(1);
+    expect(player.removeAttribute).toHaveBeenCalledWith("src");
+    expect(revoke).toHaveBeenCalledWith("blob:pending-play");
+    expect(error).toHaveBeenCalledWith("朗读已停止，请确认登录状态后重试。");
+    scope = { ...scope, verified: true };
+    await act(async () => {
+      hook.result.current.replay();
+      await hook.result.current.resume();
+    });
+    expect(fetched).toHaveBeenCalledTimes(1);
+    expect(audio).toHaveBeenCalledTimes(1);
+    expect(player.play).toHaveBeenCalledTimes(1);
+    hook.unmount();
+  });
+
+  test("an old discarded response cannot clear playback started by the next owner", async () => {
+    let scope: VoiceScope = {
+      epoch: 1,
+      userId: "member-a",
+      chatId: "chat-a",
+      model: "model-a",
+      verified: true,
+      canRecord: true,
+    };
+    const message: FamilyMessage = {
+      id: "assistant-a",
+      role: "assistant",
+      status: "complete",
+      content: "合成回复",
+      createdAt: "2026-10-30T00:00:00Z",
+    };
+    let finishOldBody!: (blob: Blob) => void;
+    const oldBody = new Promise<Blob>((resolve) => {
+      finishOldBody = resolve;
+    });
+    const fetched = jest.fn(
+      async (_url: RequestInfo | URL, init?: RequestInit) => ({
+        ok: true,
+        status: 200,
+        headers: new Headers({
+          "Content-Type": "audio/wav",
+          "X-Family-Voice-Parts": "1",
+          "X-Family-Voice-Part": "0",
+        }),
+        blob: () =>
+          JSON.parse(String(init?.body)).chatId === "chat-a"
+            ? oldBody
+            : Promise.resolve(
+                new Blob([new Uint8Array(44)], { type: "audio/wav" }),
+              ),
+      }),
+    );
+    global.fetch = fetched as typeof fetch;
+    const player = {
+      play: jest.fn(async () => undefined),
+      pause: jest.fn(),
+      removeAttribute: jest.fn(),
+      load: jest.fn(),
+    };
+    const audio = jest.fn(() => player);
+    property(window, "Audio", audio);
+    property(
+      URL,
+      "createObjectURL",
+      jest.fn(() => "blob:next-owner"),
+    );
+    property(URL, "revokeObjectURL", jest.fn());
+    property(crypto, "randomUUID", () => "synthetic-owner-request");
+    const error = jest.fn();
+    const hook = renderHook(() =>
+      useFamilyVoice({
+        getScope: () => scope,
+        onTranscript: jest.fn(),
+        onError: error,
+        onUnauthorized: jest.fn(),
+      }),
+    );
+    let oldPlaying!: Promise<void>;
+    act(() => {
+      oldPlaying = hook.result.current.speak("chat-a", message);
+    });
+    await waitFor(() => expect(fetched).toHaveBeenCalledTimes(1));
+    scope = { ...scope, epoch: 2, userId: "member-b", chatId: "chat-b" };
+    await act(async () => {
+      hook.result.current.reset();
+      await hook.result.current.speak("chat-b", {
+        ...message,
+        id: "assistant-b",
+      });
+    });
+    expect(hook.result.current.playback).toMatchObject({
+      status: "playing",
+      messageId: "assistant-b",
+    });
+    await act(async () => {
+      finishOldBody(new Blob([new Uint8Array(44)], { type: "audio/wav" }));
+      await oldPlaying;
+    });
+    expect(hook.result.current.playback).toMatchObject({
+      status: "playing",
+      messageId: "assistant-b",
+    });
+    expect(player.pause).not.toHaveBeenCalled();
+    expect(audio).toHaveBeenCalledTimes(1);
+    expect(error).not.toHaveBeenCalled();
+    expect(fetched).toHaveBeenCalledTimes(2);
+    hook.unmount();
+  });
+
+  test("a deferred transcription during identity checking finishes idle without sending or retrying", async () => {
+    let scope: VoiceScope = {
+      epoch: 1,
+      userId: "member-a",
+      chatId: "chat-a",
+      model: "model-a",
+      verified: true,
+      canRecord: true,
+    };
+    const micStop = jest.fn();
+    property(navigator, "mediaDevices", {
+      getUserMedia: jest.fn(async () => ({
+        getTracks: () => [{ stop: micStop }],
+      })),
+    });
+    class SyntheticRecorder {
+      static isTypeSupported() {
+        return true;
+      }
+      state = "inactive";
+      mimeType = "audio/webm";
+      ondataavailable: ((event: { data: Blob }) => void) | null = null;
+      onstop: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      start() {
+        this.state = "recording";
+      }
+      stop() {
+        this.state = "inactive";
+        this.ondataavailable?.({ data: new Blob(["synthetic-recording"]) });
+        this.onstop?.();
+      }
+    }
+    class SyntheticContext {
+      state = "suspended";
+      async decodeAudioData() {
+        return {
+          sampleRate: 48000,
+          numberOfChannels: 1,
+          getChannelData: () => new Float32Array(24000).fill(0.1),
+        };
+      }
+      async close() {
+        this.state = "closed";
+      }
+    }
+    property(window, "MediaRecorder", SyntheticRecorder);
+    property(window, "AudioContext", SyntheticContext);
+    property(Blob.prototype, "arrayBuffer", function (this: Blob) {
+      return bytes(this);
+    });
+    property(crypto, "randomUUID", () => "synthetic-transcription");
+    let finishTranscript!: (value: { text: string }) => void;
+    const pendingTranscript = new Promise<{ text: string }>((resolve) => {
+      finishTranscript = resolve;
+    });
+    const readTranscript = jest.fn(() => pendingTranscript);
+    const fetched = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: readTranscript,
+    }));
+    global.fetch = fetched as typeof fetch;
+    const transcript = jest.fn();
+    const error = jest.fn();
+    const hook = renderHook(() =>
+      useFamilyVoice({
+        getScope: () => scope,
+        onTranscript: transcript,
+        onError: error,
+        onUnauthorized: jest.fn(),
+      }),
+    );
+    act(() => hook.result.current.startRecording());
+    await waitFor(() => expect(hook.result.current.phase).toBe("recording"));
+    act(() => hook.result.current.releaseRecording());
+    await waitFor(() => expect(readTranscript).toHaveBeenCalledTimes(1));
+    expect(hook.result.current.phase).toBe("transcribing");
+    scope = { ...scope, verified: false };
+    await act(async () => {
+      finishTranscript({ text: "确认身份期间的录音不会发送" });
+    });
+    await waitFor(() => expect(hook.result.current.phase).toBe("idle"));
+    expect(transcript).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+    expect(micStop).toHaveBeenCalledTimes(1);
+    scope = { ...scope, verified: true };
+    await act(async () => Promise.resolve());
+    expect(fetched).toHaveBeenCalledTimes(1);
+    expect(transcript).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+
   test("released capture transcribes Chinese, sends it through the selected model and automatically reads the saved reply", async () => {
     const transcript = "帮我整理明天的家庭安排";
     const micStop = jest.fn();

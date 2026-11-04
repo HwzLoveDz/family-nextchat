@@ -7,6 +7,7 @@ import { FamilyApiError } from "./errors";
 import {
   ProviderQuotaExhaustedError,
   isQuotaExhaustedError,
+  isQuotaExhaustedDetails,
   rejectExhaustedQuota,
 } from "./provider-keys";
 import {
@@ -65,6 +66,10 @@ const networkCodes = new Set([
   "WS_ERR_UNEXPECTED_RSV_1",
 ]);
 const providerCodes = new Set([
+  "credit_balance_exhausted",
+  "organization_spend_limit_exceeded",
+  "project_spend_limit_exceeded",
+  "organization_usage_limit_exceeded",
   "invalid_api_key",
   "insufficient_quota",
   "rate_limit_exceeded",
@@ -85,6 +90,7 @@ const providerCodes = new Set([
   "billing_hard_limit_reached",
 ]);
 const providerTypes = new Set([
+  "insufficient_quota",
   "invalid_request_error",
   "server_error",
   "rate_limit_error",
@@ -427,6 +433,7 @@ export async function requestSpeech(
     let diagnosticTimer: ReturnType<typeof setTimeout> | undefined;
     let settled = false;
     let opened = false;
+    let responseRequested = false;
     const parser = new RealtimeSpeechDecoder(evidence);
     const finish = (error?: unknown, audio?: Uint8Array) => {
       if (settled) return;
@@ -460,18 +467,12 @@ export async function requestSpeech(
         },
       );
       socket.once("open", () => {
-        // Once a WebSocket is open it may already carry a billable session;
-        // neither provider events nor later failures may trigger key fallback.
+        // A transport upgrade can still be followed by an initial quota
+        // rejection. Send no text until session.created confirms readiness.
         opened = true;
         if (signal.aborted) {
           onAbort();
           return;
-        }
-        try {
-          socket!.send(JSON.stringify(speechResponseEvent(text)));
-        } catch (error) {
-          realtimeDiagnostic("socket", { networkCode: networkCode(error) });
-          finish(providerError());
         }
       });
       socket.on("message", (data, binary) => {
@@ -481,7 +482,44 @@ export async function requestSpeech(
             finish(providerError());
             return;
           }
-          if (parser.write(rawBytes(data))) finish(undefined, parser.wav());
+          const raw = rawBytes(data);
+          if (!responseRequested) {
+            const event: unknown = JSON.parse(
+              new TextDecoder("utf-8", { fatal: true }).decode(raw),
+            );
+            if (!event || typeof event !== "object" || Array.isArray(event))
+              throw providerError();
+            const initial = event as Record<string, any>;
+            if (initial.type === "error") {
+              realtimeDiagnostic("provider-event", {
+                eventCode: initial.error?.code,
+                eventType: initial.error?.type,
+                param: initial.error?.param,
+              });
+              // No client frame has been sent and no session was created.
+              // This is rejection, not a retry of an accepted generation.
+              if (isQuotaExhaustedDetails(initial.error))
+                throw new ProviderQuotaExhaustedError();
+              throw providerError();
+            }
+            if (
+              initial.type !== "session.created" ||
+              !initial.session ||
+              typeof initial.session !== "object" ||
+              Array.isArray(initial.session) ||
+              initial.session.type !== "realtime" ||
+              !safeVoiceModel(initial.session.model) ||
+              (initial.session.model !== SPEECH_MODEL &&
+                !initial.session.model.startsWith(`${SPEECH_MODEL}-`))
+            )
+              throw providerError();
+            parser.write(raw);
+            // Set before send: a transport failure cannot safely be retried.
+            responseRequested = true;
+            socket!.send(JSON.stringify(speechResponseEvent(text)));
+            return;
+          }
+          if (parser.write(raw)) finish(undefined, parser.wav());
         } catch (error) {
           realtimeDiagnostic("parse");
           finish(error);

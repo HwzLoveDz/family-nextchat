@@ -201,6 +201,173 @@ describe("family client account isolation", () => {
     jest.useRealTimers();
   });
 
+  test("manual read waits for the same owner's identity check without silently starting speech", async () => {
+    render(<FamilyApp />);
+    fireEvent.click(await screen.findByRole("button", { name: /聊天 a/ }));
+    const read = await screen.findByRole("button", { name: "朗读回复" });
+    await waitFor(() => expect(read).toBeEnabled());
+    const baseHandler = requestHandler;
+    let confirmIdentity!: (response: Response) => void;
+    const pendingIdentity = new Promise<Response>((resolve) => {
+      confirmIdentity = resolve;
+    });
+    requestHandler = async (path, init) =>
+      path === "/api/family/me" ? pendingIdentity : baseHandler(path, init);
+    const before = fetchMock.mock.calls.filter(
+      ([path]) => path === "/api/family/me",
+    ).length;
+    advanceIdentityCooldown();
+    backgroundEvent("focus");
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(([path]) => path === "/api/family/me")
+          .length,
+      ).toBe(before + 1),
+    );
+    expect(read).toBeDisabled();
+    expect(read).toHaveAttribute("title", "确认登录状态后可朗读。");
+    fireEvent.click(read);
+    expect(
+      fetchMock.mock.calls.filter(
+        ([path]) => path === "/api/family/voice/speech",
+      ),
+    ).toHaveLength(0);
+    await act(async () => {
+      confirmIdentity(
+        json({ user: memberA, sessionExpiresAt: "2026-11-29T00:00:00Z" }),
+      );
+    });
+    await waitFor(() => expect(read).toBeEnabled());
+    expect(screen.getByRole("button", { name: "朗读回复" })).toBe(read);
+    expect(screen.getByText("甲的私密回复")).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.filter(
+        ([path]) => path === "/api/family/voice/speech",
+      ),
+    ).toHaveLength(0);
+  });
+
+  test("a pending read blocks duplicate generation and cached playback keeps working after autoplay is blocked", async () => {
+    const audioProperties = [
+      [window, "Audio"],
+      [URL, "createObjectURL"],
+      [URL, "revokeObjectURL"],
+    ].map(([target, key]) => ({
+      target: target as object,
+      key: key as string,
+      descriptor: Object.getOwnPropertyDescriptor(target, key as string),
+    }));
+    const play = jest
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new DOMException("Blocked", "NotAllowedError"))
+      .mockResolvedValue(undefined);
+    const pause = jest.fn();
+    class SyntheticAudio {
+      onended: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      play = play;
+      pause = pause;
+      removeAttribute() {}
+      load() {}
+    }
+    Object.defineProperty(window, "Audio", {
+      configurable: true,
+      value: SyntheticAudio,
+    });
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: jest.fn(() => "blob:synthetic-manual-read"),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: jest.fn(),
+    });
+    const baseHandler = requestHandler;
+    let finishSpeech!: (response: Response) => void;
+    const pendingSpeech = new Promise<Response>((resolve) => {
+      finishSpeech = resolve;
+    });
+    requestHandler = async (path, init) => {
+      if (path === "/api/family/chats/a") {
+        const conversation = detail("第一条合成回复");
+        conversation.messages.push({
+          ...conversation.messages[0],
+          id: "second-read-reply",
+          content: "第二条合成回复",
+        });
+        return json(conversation);
+      }
+      if (path === "/api/family/voice/speech") {
+        expect(JSON.parse(String(init?.body))).toMatchObject({
+          chatId: "a",
+          messageId: "message-a",
+          part: 0,
+        });
+        return pendingSpeech;
+      }
+      return baseHandler(path, init);
+    };
+    const speechRequests = () =>
+      fetchMock.mock.calls.filter(
+        ([path]) => path === "/api/family/voice/speech",
+      ).length;
+    const view = render(<FamilyApp />);
+    try {
+      fireEvent.click(await screen.findByRole("button", { name: /聊天 a/ }));
+      await screen.findByText("第一条合成回复");
+      const [firstRead, secondRead] = screen.getAllByRole("button", {
+        name: "朗读回复",
+      });
+      await waitFor(() => expect(firstRead).toBeEnabled());
+      fireEvent.click(firstRead);
+      await waitFor(() => expect(speechRequests()).toBe(1));
+      expect(firstRead).toBeDisabled();
+      expect(firstRead).toHaveAttribute("aria-busy", "true");
+      expect(firstRead).toHaveTextContent("正在生成语音…");
+      expect(secondRead).toBeDisabled();
+      expect(secondRead).toHaveTextContent("朗读 · AI声音");
+      expect(secondRead).toHaveAttribute("aria-busy", "false");
+      expect(screen.getByRole("button", { name: "停止播放" })).toBeEnabled();
+      fireEvent.click(firstRead);
+      fireEvent.click(secondRead);
+      expect(speechRequests()).toBe(1);
+      await act(async () => {
+        finishSpeech({
+          ok: true,
+          status: 200,
+          headers: new Headers({
+            "Content-Type": "audio/wav",
+            "X-Family-Voice-Parts": "1",
+            "X-Family-Voice-Part": "0",
+            "X-Family-Voice-Truncated": "0",
+          }),
+          blob: async () =>
+            new Blob([new Uint8Array(44)], { type: "audio/wav" }),
+        } as Response);
+      });
+      const resume = await screen.findByRole("button", { name: "点击播放" });
+      expect(firstRead).toBeEnabled();
+      expect(firstRead).toHaveAttribute("aria-busy", "false");
+      expect(play).toHaveBeenCalledTimes(1);
+      fireEvent.click(resume);
+      await waitFor(() => expect(play).toHaveBeenCalledTimes(2));
+      expect(speechRequests()).toBe(1);
+      fireEvent.click(screen.getByRole("button", { name: "重播已生成语音" }));
+      await waitFor(() => expect(play).toHaveBeenCalledTimes(3));
+      expect(speechRequests()).toBe(1);
+      fireEvent.click(screen.getByRole("button", { name: "停止播放" }));
+      expect(screen.queryByRole("button", { name: "停止播放" })).toBeNull();
+      expect(pause).toHaveBeenCalled();
+    } finally {
+      view.unmount();
+      audioProperties.forEach(({ target, key, descriptor }) =>
+        descriptor
+          ? Object.defineProperty(target, key, descriptor)
+          : Reflect.deleteProperty(target, key),
+      );
+    }
+  });
+
   test("login and signup omit the requested sentence and retain service status", async () => {
     identity = null;
     const removedSentence =

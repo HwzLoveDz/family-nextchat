@@ -156,13 +156,12 @@ export class ProviderQuotaExhaustedError extends FamilyApiError {
 
 /** Status and structured error codes are evidence; human-readable text is not. */
 export function isQuotaExhaustedError(status: number, error: unknown): boolean {
-  if (
-    status !== 429 ||
-    !error ||
-    typeof error !== "object" ||
-    Array.isArray(error)
-  )
-    return false;
+  return status === 429 && isQuotaExhaustedDetails(error);
+}
+
+/** Callers must separately prove rejection before a request/session was accepted. */
+export function isQuotaExhaustedDetails(error: unknown): boolean {
+  if (!error || typeof error !== "object" || Array.isArray(error)) return false;
   const { code, type } = error as { code?: unknown; type?: unknown };
   if (typeof code === "string" && QUOTA_CODES.has(code)) return true;
   return code == null && type === "insufficient_quota";
