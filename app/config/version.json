@@ -1,0 +1,5 @@
+{
+  "version": "2.16.1",
+  "upstream": "NextChat",
+  "source": "Migrated from src-tauri/tauri.conf.json at commit 2546051961559152b60bfa5006cbd174af6a0023"
+}

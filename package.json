@@ -8,22 +8,13 @@
   "scripts": {
     "family:migrate": "node --conditions=react-server --import tsx scripts/family/migrate.ts",
     "family:test:integration": "node --conditions=react-server --require ./scripts/family/test-preload.cjs --import tsx scripts/family/integration.ts",
-    "mask": "npx tsx app/masks/build.ts",
-    "mask:watch": "npx watch \"yarn mask\" app/masks",
-    "dev": "concurrently -r \"yarn run mask:watch\" \"next dev\"",
-    "build": "yarn mask && cross-env BUILD_MODE=standalone next build",
+    "dev": "cross-env FAMILY_MODE=1 next dev",
+    "build": "cross-env BUILD_MODE=standalone next build",
     "start": "next start",
     "lint": "next lint",
-    "export": "yarn mask && cross-env BUILD_MODE=export BUILD_APP=1 next build",
-    "export:dev": "concurrently -r \"yarn mask:watch\"  \"cross-env BUILD_MODE=export BUILD_APP=1 next dev\"",
-    "app:dev": "concurrently -r \"yarn mask:watch\" \"yarn tauri dev\"",
-    "app:build": "yarn mask && yarn tauri build",
-    "app:clear": "yarn tauri dev",
-    "prompts": "node ./scripts/fetch-prompts.mjs",
     "prepare": "husky install",
-    "proxy-dev": "sh ./scripts/init-proxy.sh && proxychains -f ./scripts/proxychains.conf yarn dev",
-    "test": "node --no-warnings --experimental-vm-modules $(yarn bin jest) --watch",
-    "test:ci": "node --no-warnings --experimental-vm-modules $(yarn bin jest) --ci"
+    "test": "node --no-warnings --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
+    "test:ci": "node --no-warnings --experimental-vm-modules node_modules/jest/bin/jest.js --ci"
   },
   "dependencies": {
     "@fortaine/fetch-event-source": "^3.0.6",
@@ -72,8 +63,6 @@
     "zustand": "^4.3.8"
   },
   "devDependencies": {
-    "@tauri-apps/api": "^2.1.1",
-    "@tauri-apps/cli": "1.5.11",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",
@@ -87,7 +76,6 @@
     "@types/react-katex": "^3.0.0",
     "@types/spark-md5": "^3.0.4",
     "@types/ws": "8.18.2",
-    "concurrently": "^8.2.2",
     "cross-env": "^7.0.3",
     "eslint": "^8.49.0",
     "eslint-config-next": "15.5.28",
@@ -102,7 +90,6 @@
     "ts-node": "^10.9.2",
     "tsx": "^4.16.0",
     "typescript": "5.4.5",
-    "watch": "^1.0.2",
     "webpack": "^5.88.1"
   },
   "resolutions": {

@@ -1,0 +1,18 @@
+{
+  "name": "Retire legacy family site entry points",
+  "description": "Only harveychat.dpdns.org serves this private family application; retire legacy aliases and historical deployment URLs.",
+  "active": true,
+  "conditionGroup": [
+    {
+      "conditions": [
+        {
+          "type": "host",
+          "op": "eq",
+          "neg": true,
+          "value": "harveychat.dpdns.org"
+        }
+      ]
+    }
+  ],
+  "action": { "mitigate": { "action": "deny" } }
+}

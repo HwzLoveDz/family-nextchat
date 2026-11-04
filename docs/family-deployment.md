@@ -13,9 +13,10 @@ Archiving hides a conversation from its member while retaining it for the admin.
 
 ## Attachments and mobile layout
 
-The application upgrade endpoint adds schema v4 without resetting existing users,
-sessions, messages or usage. Normal requests only inspect schema readiness; an
-authenticated administrator explicitly applies the additive migration.
+The current application schema is v9. The application upgrade endpoint applies
+additive migrations without resetting existing users, sessions, messages or usage.
+Normal requests only inspect schema readiness; an authenticated administrator
+explicitly applies a required upgrade.
 
 JPEG, PNG and WebP images, PDF documents and UTF-8 TXT/Markdown/CSV/JSON/log files
 can be sent with a message. There are at most three files, 1,000,000 bytes per file
@@ -45,20 +46,31 @@ within the family UI. Responsive browser tests are not physical-phone validation
 
 Use Vercel's sensitive environment variables for secrets. Never commit an env file.
 
-| Variable | Purpose |
-| --- | --- |
-| `DATABASE_URL` | Neon PostgreSQL connection, server only; certificate and hostname verification are enforced |
-| `BETTER_AUTH_SECRET` | Random authentication secret, at least 32 characters |
-| `BETTER_AUTH_URL` | Exact HTTPS production origin; leave unset for Preview so it uses the deployment's `VERCEL_URL` |
-| `FAMILY_BOOTSTRAP_TOKEN` | Random, owner-only initialization token, at least 32 characters |
-| `OPENAI_API_KEY` | Server-only model key; a missing key fails closed without creating messages |
-| `FAMILY_OPENAI_MODEL` | Optional model name, subject to account availability |
-| `FAMILY_MODE` | `1` for local development; production is always family mode |
+| Variable                         | Purpose                                                                                         |
+| -------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                   | Neon PostgreSQL connection, server only; certificate and hostname verification are enforced     |
+| `BETTER_AUTH_SECRET`             | Random authentication secret, at least 32 characters                                            |
+| `BETTER_AUTH_URL`                | Exact HTTPS production origin; leave unset for Preview so it uses the deployment's `VERCEL_URL` |
+| `FAMILY_BOOTSTRAP_TOKEN`         | Random, owner-only initialization token, at least 32 characters                                 |
+| `FAMILY_OPENAI_PRIORITY_KEYS`    | Server-only JSON array of named priority keys; no secret values are returned to the browser     |
+| `OPENAI_API_KEY`                 | Optional server-only last-resort model key                                                      |
+| `FAMILY_OPENAI_FALLBACK_ENABLED` | `0` excludes the last-resort key; `1` enables it                                                |
+| `FAMILY_OPENAI_FALLBACK_NAME`    | Public label for the last-resort key                                                            |
+| `FAMILY_OPENAI_MODEL`            | Optional model name, subject to account availability                                            |
+| `FAMILY_OPENAI_MODELS`           | Optional comma-separated text model allowlist; omit it to use the maintained model catalog      |
+| `FAMILY_MODE`                    | `1` for local development; production is always family mode                                     |
 
 Keep the database and functions in the same region. This project selects Singapore.
 Use a separate Neon branch for Preview and verify that branch before fixture setup.
 An origin check is not database isolation. Never run fixture initialization on the
 production database, even if it has not yet been initialized.
+
+The administrator can persist provider order and enabled state. Newly configured
+priority keys are added first; a newly enabled last-resort key is added last.
+Each request reads this policy before choosing a provider. Only a structured
+quota-exhaustion rejection before upstream acceptance permits trying the next key;
+authentication errors, network failures and timeouts do not trigger paid retries.
+When no enabled key is available, model requests fail closed.
 
 ## Owner initialization
 
